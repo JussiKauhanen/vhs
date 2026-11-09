@@ -2,9 +2,23 @@
 
 Record a short clip of your screen, drop friendly animated stickers on it, and share it as a GIF, MP4 or PNG — made for quick how-to snippets in GitHub READMEs. Everything runs in the web page; nothing is uploaded.
 
+### [▶ Try Clipnote live](https://jussikauhanen.github.io/clipnote/)
+
+Works best in Chrome or Edge on a computer.
+
+<!-- Demo slots: replace any file in docs/ with a new one of the same name to update the pictures below. -->
+![Clipnote in action: start a recording, drag stickers onto the clip, trim it and export a GIF](docs/demo.gif)
+
+| What you get | Your clips, saved in the browser |
+| :---: | :---: |
+| ![A GIF made with Clipnote: a note, a click ring on the “New note” button, a NEW tag and a highlighter](docs/example.gif) | ![The home page with saved clips](docs/home.png) |
+| *This GIF was made with Clipnote.* | *Pick up any clip where you left off.* |
+
+![The editor in dark mode, with the sticker panel and a timeline line for each sticker](docs/editor-dark.png)
+
 ## Use it
 
-Open `index.html` in Chrome or Edge, or host the folder on any static site such as GitHub Pages. (`Start Clipnote.command` is an optional Mac shortcut that serves the folder locally and opens it.)
+Open the [live version](https://jussikauhanen.github.io/clipnote/), or open `index.html` from this folder in Chrome or Edge. (`Start Clipnote.command` is an optional Mac shortcut that serves the folder locally and opens it.)
 
 1. Click **Start recording** and pick a window to share. That window comes to the front so you can work in it right away. Sharing a single window, not the entire screen, keeps the floating controls out of your video.
 2. A small floating window stays on top of everything. It shows a live mini view of what is being recorded (blue frame when ready, red while recording) with **Record**, **Pause**, **Stop**, and the **camera** button for screenshots. Screenshots are collected and open as their own tabs when you finish. Press **Done** (or Stop) to finish.
@@ -27,7 +41,7 @@ Shortcuts in the editor: Space play/pause · ← → step (Shift: 1 s) · `[` `]
 
 ## Host on GitHub Pages
 
-Put `index.html`, `style.css`, `app.js` and the `vendor` folder at the root of the publishing branch, then choose **Settings → Pages → Deploy from a branch**.
+Put `index.html`, `style.css`, `app.js` and the `vendor` folder at the root of the publishing branch (the `docs` folder only holds the README pictures), then choose **Settings → Pages → Deploy from a branch**. The site appears at `https://jussikauhanen.github.io/<repository-name>/`; the links above assume the repository is called `clipnote`.
 
 ## Credits
 

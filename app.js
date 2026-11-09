@@ -574,6 +574,8 @@ async function saveProject(p) {
       size: media?.size ?? p.size ?? 0,
     };
     await Library.save(meta, media);
+    // Deleted while this save was still running: remove it again.
+    if (p.deleted) return Library.remove(p.dbId).catch(() => {});
     p.thumb = thumb;
     if (media) {
       p.mediaSaved = true;
@@ -931,8 +933,10 @@ function renameInTab(p, label) {
 }
 function closeProject(p, deleted = false) {
   if (exporting) return;
-  if (deleted) cancelSave(p);
-  else flushSave(p);
+  if (deleted) {
+    p.deleted = true;
+    cancelSave(p);
+  } else flushSave(p);
   const i = projects.indexOf(p);
   if (i < 0) return;
   projects.splice(i, 1);
