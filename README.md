@@ -2,7 +2,7 @@
 
 Record a short clip of your screen, drop friendly animated stickers on it, and share it as a GIF, MP4 or PNG — made for quick how-to snippets in GitHub READMEs. Everything runs in the web page; nothing is uploaded.
 
-### [▶ Try Clipnote live](https://jussikauhanen.github.io/clipnote/)
+### [▶ Try Clipnote live](https://jussikauhanen.github.io/vhs/)
 
 Works best in Chrome or Edge on a computer.
 
@@ -18,7 +18,7 @@ Works best in Chrome or Edge on a computer.
 
 ## Use it
 
-Open the [live version](https://jussikauhanen.github.io/clipnote/), or open `index.html` from this folder in Chrome or Edge. (`Start Clipnote.command` is an optional Mac shortcut that serves the folder locally and opens it.)
+Open the [live version](https://jussikauhanen.github.io/vhs/), or open `index.html` from this folder in Chrome or Edge. (`Start Clipnote.command` is an optional Mac shortcut that serves the folder locally and opens it.)
 
 1. Click **Start recording** and pick a window to share. That window comes to the front so you can work in it right away. Sharing a single window, not the entire screen, keeps the floating controls out of your video.
 2. A small floating window stays on top of everything. It shows a live mini view of what is being recorded (blue frame when ready, red while recording) with **Record**, **Pause**, **Stop**, and the **camera** button for screenshots. Screenshots are collected and open as their own tabs when you finish. Press **Done** (or Stop) to finish.
