@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#eeece5" />
+    <title>VHS · Screen recorder</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <span class="tape" aria-hidden="true">● &nbsp; ●</span> VHS
+      </div>
+      <span class="brandline">Screen recorder</span>
+      <div class="local"><i></i> Local workspace</div>
+    </header>
+    <main>
+      <div class="title">
+        <h1 id="title">Capture studio</h1>
+        <button id="import">Import image</button
+        ><input type="file" id="file" accept="image/*" hidden />
+      </div>
+      <div class="console">
+        <section class="monitor">
+          <div class="monitorbar">
+            <strong>VIEWFINDER</strong><span id="signal">● &nbsp; STANDBY</span>
+          </div>
+          <div class="glass" id="glass">
+            <div class="pattern" id="pattern">
+              <div class="bars"></div>
+              <div class="barfoot"></div>
+              <div class="standby">VHS <span>STANDBY</span></div>
+            </div>
+            <div id="surface" hidden>
+              <video id="live" autoplay muted playsinline></video>
+              <div
+                id="crop"
+                tabindex="0"
+                aria-label="Viewfinder. Use arrow keys to move, shift and arrows to resize."
+              >
+                <b></b><b></b><b></b><b></b>
+              </div>
+            </div>
+            <canvas id="display" hidden></canvas>
+          </div>
+          <div class="monitorfoot">
+            <span id="format">NO INPUT</span><span id="clock">00:00.0</span>
+          </div>
+        </section>
+        <aside>
+          <section id="capturePanel">
+            <h2>Capture</h2>
+            <p class="intro">
+              Choose a source, then frame the area you want to record.
+            </p>
+            <label class="label">SOURCE</label
+            ><button id="share" class="wide">Choose screen or window</button>
+            <label for="aspect" class="label">VIEWFINDER</label
+            ><select id="aspect">
+              <option value="free">Freeform</option>
+              <option value="1.777777778">Widescreen · 16:9</option>
+              <option value="1">Square · 1:1</option>
+              <option value="full">Full source</option>
+            </select>
+            <p class="hint" id="frameHint">
+              Drag the frame to move it. Drag a corner to resize.
+            </p>
+            <button id="record" class="primary wide" disabled>
+              <span>●</span> Record
+            </button>
+          </section>
+          <section id="editPanel" hidden>
+            <h2>Editor</h2>
+            <div class="label">ANNOTATIONS</div>
+            <div class="toolgroup" id="tools">
+              <button data-tool="arrow">↗ Arrow</button
+              ><button data-tool="box">□ Box</button
+              ><button data-tool="note">T Note</button>
+            </div>
+            <p id="toolHint" class="hint">
+              Choose a tool, then draw on the preview.
+            </p>
+            <input
+              id="note"
+              maxlength="120"
+              placeholder="Write a note"
+              aria-label="Note text"
+              hidden
+            />
+            <details id="markTiming">
+              <summary>Annotation timing</summary>
+              <div class="timing">
+                <label
+                  >From (s)<input
+                    id="markFrom"
+                    type="number"
+                    min="0"
+                    step=".1"
+                    value="0" /></label
+                ><label
+                  >Until (s)<input
+                    id="markUntil"
+                    type="number"
+                    min="0"
+                    step=".1"
+                    placeholder="Clip end"
+                /></label>
+              </div>
+            </details>
+            <div class="row">
+              <label for="ink">Ink</label
+              ><input type="color" id="ink" value="#ff633e" /><button
+                id="undo"
+                disabled
+              >
+                Undo
+              </button>
+            </div>
+            <div class="rule"></div>
+            <button id="gif" class="primary wide">Export GIF</button
+            ><button id="png" class="wide" hidden>Save PNG</button
+            ><button id="new" class="quiet wide">New capture</button>
+          </section>
+        </aside>
+      </div>
+      <section id="timeline" hidden>
+        <div class="timelinehead">
+          <h2>Timeline</h2>
+          <button id="play">▶ Play</button>
+        </div>
+        <input
+          id="seek"
+          type="range"
+          min="0"
+          step=".01"
+          value="0"
+          aria-label="Playhead"
+        />
+        <div class="timing">
+          <label
+            >Start (s)<input
+              id="start"
+              type="number"
+              min="0"
+              step=".1" /></label
+          ><label
+            >End (s)<input id="end" type="number" min=".01" step=".1" /></label
+          ><label
+            >Speed<select id="speed">
+              <option value=".5">0.5×</option>
+              <option value="1" selected>1×</option>
+              <option value="2">2×</option>
+            </select></label
+          ><label
+            >Hold last frame (s)<input
+              type="number"
+              min="0"
+              max="30"
+              step=".1"
+              value="0"
+              id="hold"
+          /></label>
+        </div>
+      </section>
+      <p id="status" role="status">
+        Choose a screen or window to connect the viewfinder, or import an image
+        to edit.
+      </p>
+    </main>
+    <script src="vendor/gifenc.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

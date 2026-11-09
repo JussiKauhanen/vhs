@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#eeece5" />
+    <title>VHS · Screen recorder</title>
+    <link rel="icon" href="data:," />
+    <script>
+      try {
+        const t = localStorage.getItem("vhs-theme");
+        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      } catch {}
+    </script>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <span class="tape" aria-hidden="true">● &nbsp; ●</span> VHS
+      </div>
+      <span class="brandline" id="title">Capture studio</span>
+      <div class="local"><i></i> Local workspace</div>
+      <div class="headactions">
+        <button id="theme" class="quiet" title="Theme">◐ Auto</button>
+        <span id="editActions" hidden
+          ><button id="new" class="quiet">New capture</button
+          ><button id="png" hidden>Save PNG</button
+          ><button id="gif" class="primary">Export GIF…</button></span
+        ><button id="import">Import image</button
+        ><input type="file" id="file" accept="image/*" hidden />
+      </div>
+    </header>
+    <main>
+      <div class="console">
+        <section class="monitor">
+          <div class="monitorbar">
+            <strong>VIEWFINDER</strong><span id="signal">● &nbsp; STANDBY</span>
+          </div>
+          <div class="glass" id="glass">
+            <div class="pattern" id="pattern">
+              <div class="bars"></div>
+              <div class="barfoot"></div>
+              <div class="standby">VHS <span>STANDBY</span></div>
+            </div>
+            <div id="surface" hidden>
+              <video id="live" autoplay muted playsinline></video>
+              <div
+                id="crop"
+                tabindex="0"
+                aria-label="Viewfinder. Use arrow keys to move, shift and arrows to resize."
+              >
+                <b></b><b></b><b></b><b></b>
+              </div>
+            </div>
+            <canvas id="display" hidden></canvas>
+          </div>
+          <div class="monitorfoot">
+            <span id="format">NO INPUT</span><span id="clock">00:00.0</span>
+          </div>
+        </section>
+        <aside>
+          <section id="capturePanel">
+            <h2>Capture</h2>
+            <p class="intro">
+              Choose a source, then frame the area you want to keep.
+            </p>
+            <label class="label">SOURCE</label
+            ><button id="share" class="wide">Choose screen or window</button>
+            <label for="aspect" class="label">VIEWFINDER</label
+            ><select id="aspect">
+              <option value="free">Freeform</option>
+              <option value="1.777777778">Widescreen · 16:9</option>
+              <option value="1">Square · 1:1</option>
+              <option value="full">Full source</option>
+            </select>
+            <p class="hint" id="frameHint">
+              Drag the frame to move it. Drag a corner to resize.
+            </p>
+            <button id="record" class="primary wide" disabled>
+              <span>●</span> Record
+            </button>
+            <button id="pause" class="wide gap" hidden>Ⅱ Pause</button>
+            <p class="hint" id="miniHint"></p>
+          </section>
+          <section id="editPanel" hidden>
+            <h2>Editor</h2>
+            <div class="label">ANNOTATIONS</div>
+            <div class="toolgroup" id="tools">
+              <button data-tool="arrow">↗ Arrow</button
+              ><button data-tool="box">□ Box</button
+              ><button data-tool="note">T Note</button>
+            </div>
+            <p id="toolHint" class="hint"></p>
+            <input
+              id="note"
+              maxlength="120"
+              placeholder="Write a note"
+              aria-label="Note text"
+              hidden
+            />
+            <div class="row">
+              <label for="ink">Ink</label
+              ><input type="color" id="ink" value="#ff633e" /><button
+                id="undo"
+                disabled
+                title="Undo (⌘Z)"
+              >
+                Undo
+              </button>
+            </div>
+          </section>
+          <p id="status" role="status">
+            Choose a screen or window to connect the viewfinder, or import an
+            image to edit.
+          </p>
+        </aside>
+      </div>
+      <section id="timeline" hidden>
+        <div class="tlbar">
+          <button id="play" title="Play or pause (Space)">▶ Play</button
+          ><button
+            id="loop"
+            class="toggle active"
+            aria-pressed="true"
+            title="Loop playback (L)"
+          >
+            ⟲ Loop
+          </button>
+          <span class="tc"
+            ><b id="tcNow">00:00.0</b> / <span id="tcTotal">00:00.0</span></span
+          >
+          <span class="divider"></span>
+          <button id="cutStart" title="Cut away everything before the playhead ( [ )">
+            ✂ Cut start
+          </button>
+          <button id="cutEnd" title="Cut away everything after the playhead ( ] )">
+            Cut end ✂
+          </button>
+          <button id="restore" class="quiet" hidden>Restore full clip</button>
+          <span class="grow"></span>
+          <label id="speedWrap"
+            >Speed
+            <select id="speed">
+              <option value="0.5">0.5×</option>
+              <option value="1" selected>1×</option>
+              <option value="2">2×</option>
+            </select></label
+          >
+          <label
+            >Hold end
+            <input id="hold" type="number" min="0" max="30" step=".1" value="0" />
+            s</label
+          >
+        </div>
+        <div class="tracks" id="tracks">
+          <div class="tl-inner">
+            <div class="trow ruler">
+              <div class="tlab">Tracks</div>
+              <div class="lane" id="ruler"></div>
+            </div>
+            <div id="rows"></div>
+            <div class="tl-after" id="tlAfter"></div>
+            <div class="cutshade" id="cutshade" hidden></div>
+            <div class="playhead" id="playhead"><i></i></div>
+          </div>
+        </div>
+        <p class="keys">
+          Space play · L loop · ← → step · [ ] cut at playhead · Delete removes
+          the selected mark · ⌘Z undo
+        </p>
+      </section>
+    </main>
+    <dialog id="exportDialog">
+      <form method="dialog">
+        <h2>Export GIF</h2>
+        <div class="field">
+          <label for="exSize">Size</label><select id="exSize"></select>
+        </div>
+        <div class="field" id="exFpsField">
+          <label for="exFps">Frame rate</label
+          ><select id="exFps">
+            <option value="5">5 fps · smallest</option>
+            <option value="10">10 fps</option>
+            <option value="15">15 fps</option>
+            <option value="20">20 fps · smoothest</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="exColors">Colours</label
+          ><select id="exColors">
+            <option value="256">256 · best</option>
+            <option value="128">128</option>
+            <option value="64">64</option>
+            <option value="32">32 · smallest</option>
+          </select>
+        </div>
+        <div class="estimate">
+          <span class="label">ESTIMATED SIZE</span>
+          <strong id="exEstimate">–</strong>
+          <span id="exMeta"></span>
+        </div>
+        <div class="dlgbtns">
+          <button value="cancel" formnovalidate>Cancel</button
+          ><button value="export" class="primary">Export GIF</button>
+        </div>
+      </form>
+    </dialog>
+    <script src="vendor/gifenc.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
