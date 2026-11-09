@@ -9,13 +9,6 @@ Works best in Chrome or Edge on a computer.
 <!-- Demo slots: replace any file in docs/ with a new one of the same name to update the pictures below. -->
 ![Clipnote in action: start a recording, drag stickers onto the clip, trim it and export a GIF](docs/demo.gif)
 
-| What you get | Your clips, saved in the browser |
-| :---: | :---: |
-| ![A GIF made with Clipnote: a note, a click ring on the “New note” button, a NEW tag and a highlighter](docs/example.gif) | ![The home page with saved clips](docs/home.png) |
-| *This GIF was made with Clipnote.* | *Pick up any clip where you left off.* |
-
-![The editor in dark mode, with the sticker panel and a timeline line for each sticker](docs/editor-dark.png)
-
 ## Use it
 
 Open the [live version](https://jussikauhanen.github.io/vhs/), or open `index.html` from this folder in Chrome or Edge. (`Start Clipnote.command` is an optional Mac shortcut that serves the folder locally and opens it.)
