@@ -19,3 +19,6 @@ DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
 OR OTHER DEALINGS IN THE SOFTWARE.
 
+
+
+Modified for Clipnote (2026): frames can be written at an x/y offset, and the library is wrapped in a named factory so it can run in a Web Worker.

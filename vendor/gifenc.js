@@ -1,4 +1,6 @@
-window.GifEnc = (() => {
+/* gifenc 1.0.3 (MIT). Modified for Clipnote: frames can be placed at an x/y offset, and the
+   library is wrapped in a named factory so it can also run inside a Web Worker. */
+function ClipnoteGifEnc() {
 const exports = {};
 var __defProp = Object.defineProperty;
 var __markAsModule = (target) => __defProp(target, "__esModule", {value: true});
@@ -697,7 +699,9 @@ function GIFEncoder(opt = {}) {
         palette = null,
         repeat = 0,
         colorDepth = 8,
-        dispose = -1
+        dispose = -1,
+        x = 0,
+        y = 0
       } = opts;
       let first = false;
       if (auto) {
@@ -724,7 +728,7 @@ function GIFEncoder(opt = {}) {
       const delayTime = Math.round(delay / 10);
       encodeGraphicControlExt(stream, dispose, delayTime, transparent, transparentIndex);
       const useLocalColorTable = Boolean(palette) && !first;
-      encodeImageDescriptor(stream, width, height, useLocalColorTable ? palette : null);
+      encodeImageDescriptor(stream, width, height, useLocalColorTable ? palette : null, x, y);
       if (useLocalColorTable)
         encodeColorTable(stream, palette);
       encodePixels(stream, index, width, height, colorDepth, accum, htab, codetab);
@@ -793,10 +797,10 @@ function encodeColorTable(stream, palette) {
     stream.writeByte(color[2]);
   }
 }
-function encodeImageDescriptor(stream, width, height, localPalette) {
+function encodeImageDescriptor(stream, width, height, localPalette, x = 0, y = 0) {
   stream.writeByte(44);
-  writeUInt16(stream, 0);
-  writeUInt16(stream, 0);
+  writeUInt16(stream, x);
+  writeUInt16(stream, y);
   writeUInt16(stream, width);
   writeUInt16(stream, height);
   if (localPalette) {
@@ -826,4 +830,5 @@ function colorTableSize(length) {
 var src_default = GIFEncoder;
 
 return exports;
-})();
+}
+(typeof window !== "undefined" ? window : self).GifEnc = ClipnoteGifEnc();

@@ -43,7 +43,22 @@ const store = {
 let toastTimer;
 function toast(text, ms = 3200, action) {
   const t = $("toast");
-  t.textContent = text;
+  // Work in progress (no time limit): a spinner, and later updates only change the text, so
+  // the message stays put instead of popping in again with every new number.
+  if (!ms && !action) {
+    clearTimeout(toastTimer);
+    if (!t.hidden && t.classList.contains("busy")) {
+      const label = t.querySelector(".toastlabel");
+      if (label.textContent !== text) label.textContent = text;
+      return;
+    }
+    t.textContent = "";
+    t.classList.add("busy");
+    t.append(el("span", "spinner"), el("span", "toastlabel", text));
+  } else {
+    t.classList.remove("busy");
+    t.textContent = text;
+  }
   if (action) {
     const b = el("button", "toastbtn", action.label);
     b.onclick = () => {
@@ -147,7 +162,7 @@ async function startSession() {
     return;
   }
   if (session) return;
-  session = { shots: [], clip: null };
+  session = { shots: [], shotAt: [], clip: null };
   // The floating window must open first: it needs this click.
   await openFloater();
   await pickScreen();
@@ -261,6 +276,7 @@ async function takeShot() {
   c.getContext("2d").drawImage(source, 0, 0);
   source.close?.();
   session.shots.push(c);
+  if (recorder) session.shotAt.push(recordedTime()); // a good screen for a slideshow step
   flash();
   const thumb = el("img");
   thumb.src = scaledCopy(c, 160).toDataURL("image/jpeg", 0.7);
@@ -328,7 +344,7 @@ function updateCapture() {
     mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   screen.classList.toggle("floating", !!floater);
   screen.classList.toggle("recording", state === "recording");
-  $("capTitle").textContent =
+  $("stepTitle").textContent =
     state === "recording" ? "Recording…" : state === "paused" ? "Paused" : state === "pick" ? "Pick a window to share" : "You’re sharing a window";
   $("capHint").textContent = floater
     ? "Go ahead and use the window you picked. Your controls and a live preview float on top of everything, so you never need to come back here."
@@ -473,6 +489,7 @@ async function finishSession() {
     if (s.clip) {
       const p = await videoProject(URL.createObjectURL(s.clip.blob), s.clip.length, "Recording " + shortDate());
       p.media = s.clip.blob;
+      p.shotTimes = s.shotAt.filter((t) => t < s.clip.length);
       added.push(p);
     }
   } catch (err) {
@@ -542,12 +559,14 @@ const saveTimers = new Map();
 let saveWarned = false,
   persistAsked = false;
 function scheduleSave(p = cur) {
+  p = owner(p);
   if (!p) return;
   clearTimeout(saveTimers.get(p));
   saveTimers.set(p, setTimeout(() => saveProject(p), 700));
   setSaveState("saving");
 }
 function flushSave(p) {
+  p = owner(p);
   if (saveTimers.has(p)) saveProject(p);
 }
 function cancelSave(p) {
@@ -555,8 +574,14 @@ function cancelSave(p) {
   saveTimers.delete(p);
 }
 async function saveProject(p) {
+  p = owner(p);
   cancelSave(p);
   try {
+    if (p.kind === "slides") {
+      await saveShow(p);
+      if (!saveTimers.size) setSaveState("saved");
+      return;
+    }
     const media = p.mediaSaved ? null : p.media || (await toBlob(p.source, "image/png"));
     const thumb = (await makeThumb(p)) || p.thumb || null;
     const meta = {
@@ -570,6 +595,7 @@ async function saveProject(p) {
       length: p.length,
       edit: p.edit,
       stickers: p.stickers,
+      shotTimes: p.shotTimes || [],
       thumb,
       size: media?.size ?? p.size ?? 0,
     };
@@ -647,8 +673,9 @@ function relTime(ms) {
   return new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: s > 300 * 86400 ? "numeric" : undefined });
 }
 function clipLength(c) {
+  if (c.kind === "slides") return c.steps.reduce((n, st) => n + keptLength(st.edit) / st.edit.speed + (st.edit.hold || 0), 0);
   const e = c.edit;
-  return (e.end - e.start) / e.speed + (e.hold || 0);
+  return keptLength(e) / e.speed + (e.hold || 0);
 }
 
 /* The home page gallery */
@@ -692,7 +719,13 @@ function libraryCard(c) {
     img.onload = () => URL.revokeObjectURL(img.src);
     tile.append(img);
   }
-  tile.append(el("span", "kindbadge", c.kind === "video" ? "▶ " + fmt(clipLength(c)).replace(/\.\d$/, "") : "Screenshot"));
+  const badge =
+    c.kind === "video"
+      ? "▶ " + fmt(clipLength(c)).replace(/\.\d$/, "")
+      : c.kind === "slides"
+        ? "Slideshow · " + c.steps.length + (c.steps.length === 1 ? " step" : " steps")
+        : "Screenshot";
+  tile.append(el("span", "kindbadge", badge));
   if (projects.some((p) => p.dbId === c.id)) tile.append(el("span", "openbadge", "Open"));
   tile.onclick = () => openSaved(c);
   const name = el("input", "clipname");
@@ -701,7 +734,7 @@ function libraryCard(c) {
   name.title = "Click to rename";
   name.onkeydown = (e) => e.key === "Enter" && name.blur();
   name.onchange = () => renameClip(c, name.value.trim() || c.name);
-  const stickers = c.stickers?.length || 0;
+  const stickers = c.kind === "slides" ? c.steps.reduce((n, st) => n + (st.stickers?.length || 0), 0) : c.stickers?.length || 0;
   const meta = el("p", "clipmeta", relTime(c.updated) + (stickers ? " · " + stickers + (stickers === 1 ? " sticker" : " stickers") : ""));
   const del = el("button", "icon clipdel");
   del.title = "Delete";
@@ -744,6 +777,12 @@ async function openSaved(c) {
   try {
     const media = await Library.media(c.id);
     if (!media) throw new Error("Its file is missing.");
+    if (c.kind === "slides") {
+      const g = await openSavedShow(c, media);
+      projects.push(g);
+      openProject(g);
+      return;
+    }
     const p =
       c.kind === "video"
         ? await videoProject(URL.createObjectURL(media), c.length, c.name)
@@ -751,6 +790,7 @@ async function openSaved(c) {
     Object.assign(p, { dbId: c.id, created: c.created, mediaSaved: true, size: c.size, thumb: c.thumb });
     p.edit = c.edit;
     p.stickers = c.stickers || [];
+    p.shotTimes = c.shotTimes || [];
     nextId = Math.max(nextId, ...p.stickers.map((s) => (s.id || 0) + 1));
     projects.push(p);
     openProject(p);
@@ -770,7 +810,7 @@ let projects = [],
 function baseProject(kind, name, source, width, height, length) {
   return {
     id: nextId++,
-    dbId: crypto.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2),
+    dbId: newDbId(),
     created: Date.now(),
     kind,
     name,
@@ -784,6 +824,7 @@ function baseProject(kind, name, source, width, height, length) {
       speed: 1,
       hold: kind === "video" ? 1 : 0,
       crop: [0, 0, width, height],
+      cuts: [],
     },
     stickers: [],
     history: [],
@@ -839,6 +880,35 @@ async function videoProject(url, length, name) {
   p.maxEnd = length;
   return p;
 }
+// Reading frames in order: instead of jumping (slow on screen recordings, which store few full
+// frames), play the video forward briefly and stop on the frame we need. Far or backward moves still jump.
+function frameReader(v, rate = 2) {
+  const canStep = "requestVideoFrameCallback" in HTMLVideoElement.prototype;
+  return {
+    async at(target) {
+      const now = v.currentTime;
+      if (!canStep || target < now - 0.001 || target - now > 1.5) return seekVideo(v, target);
+      if (target - now < 0.017) return;
+      const ok = await new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(false), 400);
+        const step = (_, meta) => {
+          if (meta.mediaTime >= target - 0.017) {
+            v.pause();
+            clearTimeout(timer);
+            resolve(true);
+          } else v.requestVideoFrameCallback(step);
+        };
+        v.requestVideoFrameCallback(step);
+        v.playbackRate = rate;
+        v.play().catch(() => resolve(false));
+      });
+      if (!ok) {
+        v.pause();
+        await seekVideo(v, target);
+      }
+    },
+  };
+}
 async function seekVideo(v, t) {
   if (!v.seeking && Math.abs(v.currentTime - t) < 0.0005) return;
   await waitEvent(v, "seeked", () => (v.currentTime = t));
@@ -886,11 +956,11 @@ function renderTabs() {
   const nav = $("tabs");
   nav.textContent = "";
   for (const p of projects) {
-    const b = el("button", p === cur && screenName === "editor" ? "on" : "");
+    const b = el("button", p === owner(cur) && screenName === "editor" ? "on" : "");
     b.title = "Double-click to rename";
     const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
-    use.setAttribute("href", p.kind === "video" ? "#i-play" : "#i-camera");
+    use.setAttribute("href", p.kind === "video" ? "#i-play" : p.kind === "slides" ? "#i-slides" : "#i-camera");
     icon.append(use);
     const label = el("span", "tabname", p.name);
     b.append(icon, label);
@@ -904,7 +974,7 @@ function renderTabs() {
       };
       b.append(x);
     }
-    b.onclick = () => (p !== cur || screenName !== "editor") && openProject(p);
+    b.onclick = () => (p !== owner(cur) || screenName !== "editor") && openProject(p);
     nav.append(b);
   }
 }
@@ -940,8 +1010,9 @@ function closeProject(p, deleted = false) {
   const i = projects.indexOf(p);
   if (i < 0) return;
   projects.splice(i, 1);
+  p.closed = true;
   if (p.url) setTimeout(() => URL.revokeObjectURL(p.url), 2000);
-  if (p === cur) {
+  if (p === owner(cur)) {
     stopPlay();
     cur = null;
     if (projects.length && screenName === "editor") openProject(projects[Math.max(0, i - 1)]);
@@ -951,8 +1022,15 @@ function closeProject(p, deleted = false) {
 
 function openProject(p) {
   stopPlay();
+  clearRange();
   if (cur) cur.playhead = playhead;
+  if (p.kind === "slides") p = p.steps[clamp(p.active, 0, p.steps.length - 1)];
   cur = p;
+  const g = showOf();
+  $("editor").classList.toggle("withsteps", !!g);
+  $("stepsPanel").hidden = !g;
+  $("slidesBtn").hidden = p.kind !== "video";
+  if (g) g.active = g.steps.indexOf(p);
   selected = null;
   cropping = false;
   session_id++;
@@ -963,11 +1041,16 @@ function openProject(p) {
   $("speed").value = String(p.edit.speed);
   setTool();
   updateUndo();
+  syncCaption();
+  renderSteps();
   fitView();
   renderTimeline();
   setPosition(p.playhead);
   if (!p.thumbs) buildThumbs(p);
-  if (p.kind === "video") play();
+  if (p.kind === "video") {
+    play();
+    setTimeout(() => projects.includes(p) && analyzeMotion(p).catch(() => {}), 1500);
+  }
 }
 
 /* ======================================================================
@@ -981,13 +1064,61 @@ let playhead = 0,
   session_id = 0,
   exporting = false;
 
+// The parts of the source that stay: [start, end] minus any parts cut out of the middle.
+function segments(e = cur.edit) {
+  const out = [];
+  let a = e.start;
+  for (const [c0, c1] of e.cuts || []) {
+    if (c1 <= a || c0 >= e.end) continue;
+    if (c0 > a) out.push([a, Math.min(c0, e.end)]);
+    a = Math.max(a, c1);
+  }
+  if (e.end > a + 0.0005) out.push([a, e.end]);
+  return out.length ? out : [[e.start, Math.max(e.start + 0.001, e.end)]];
+}
+function keptLength(e) {
+  return segments(e).reduce((n, [a, b]) => n + b - a, 0);
+}
 function timing() {
   const { start, end, speed, hold } = cur.edit;
-  const run = (end - start) / speed;
+  const run = keptLength(cur.edit) / speed;
   return { start, end, speed, hold, run, total: run + hold };
 }
-const toOut = (s) => (s - cur.edit.start) / cur.edit.speed;
-const toSrc = (t) => cur.edit.start + t * cur.edit.speed;
+// Source time -> output time. A time inside a cut-out part maps to where the cut joins.
+function toOut(s) {
+  const speed = cur.edit.speed,
+    segs = segments();
+  if (s <= segs[0][0]) return (s - segs[0][0]) / speed;
+  let acc = 0;
+  for (const [a, b] of segs) {
+    if (s <= b) return acc + Math.max(0, s - a) / speed;
+    acc += (b - a) / speed;
+  }
+  return acc + (s - segs.at(-1)[1]) / speed;
+}
+// Output time -> source time, jumping over the cut-out parts.
+function toSrc(t) {
+  const speed = cur.edit.speed,
+    segs = segments();
+  if (t <= 0) return segs[0][0] + t * speed;
+  let acc = 0;
+  for (const [a, b] of segs) {
+    const len = (b - a) / speed;
+    if (t < acc + len) return a + (t - acc) * speed;
+    acc += len;
+  }
+  return segs.at(-1)[1] + (t - acc) * speed;
+}
+function segmentAt(t) {
+  const speed = cur.edit.speed,
+    segs = segments();
+  let acc = 0;
+  for (let i = 0; i < segs.length; i++) {
+    acc += (segs[i][1] - segs[i][0]) / speed;
+    if (t < acc) return i;
+  }
+  return segs.length - 1;
+}
 function sourceTime(t) {
   const { start, end } = timing();
   return clamp(toSrc(t), start, Math.max(start, end - 0.001));
@@ -1662,9 +1793,15 @@ function fitView() {
     r = viewRect(),
     availW = stage.clientWidth - 40,
     availH = stage.clientHeight - 40;
-  const scale = Math.max(0.01, Math.min(availW / r[2], availH / r[3]));
+  const band = showOf() ? CAP.band : 0,
+    scale = Math.max(0.01, Math.min(availW / r[2], availH / (r[3] + r[2] * band)));
   const cssW = Math.max(40, Math.round(r[2] * scale)),
     cssH = Math.max(30, Math.round(r[3] * scale));
+  $("capBand").style.setProperty("--bw", cssW + "px");
+  $("capBand").style.width = cssW + "px";
+  // Keep the "drag a sticker here" hint on the picture, above the caption.
+  const bandH = Math.round(cssW * band);
+  $("emptyHint").style.bottom = band ? Math.round((stage.clientHeight - cssH - bandH) / 2 + bandH + 12) + "px" : "";
   view.style.width = cssW + "px";
   view.style.height = cssH + "px";
   view.width = Math.round(cssW * dpr());
@@ -1728,23 +1865,44 @@ function play() {
   $("play").setAttribute("aria-label", "Pause");
   playOrigin = performance.now() - playhead * 1000;
   const id = session_id;
+  let seg = segmentAt(playhead),
+    last = performance.now();
   const tick = (now) => {
     if (!playing || id !== session_id) return;
     const { total, run, speed } = timing();
+    // While the video is still jumping somewhere, hold the clock so stickers stay in step with it.
+    if (cur.kind === "video" && cur.source.seeking) playOrigin += now - last;
+    last = now;
     let t = (now - playOrigin) / 1000;
     if (t >= total) {
       // Loop forever.
       t = 0;
       playOrigin = now;
       setPosition(0);
+      seg = 0;
     }
     if (cur.kind === "video") {
       const v = cur.source;
       if (t >= run) {
         if (!v.paused) v.pause();
-      } else if (v.paused && !v.seeking) {
-        v.playbackRate = speed;
-        v.play().catch(() => {});
+      } else {
+        // Crossing a cut: jump the video over the part that was taken out.
+        const now_seg = segmentAt(t);
+        if (now_seg !== seg) {
+          seg = now_seg;
+          v.currentTime = sourceTime(t);
+        }
+        if (v.paused && !v.seeking) {
+          v.playbackRate = speed;
+          v.play().catch(() => {});
+        } else if (!v.seeking && !v.paused) {
+          // The video is the clock: if the two drift apart, follow the video.
+          const vt = toOut(v.currentTime);
+          if (Math.abs(vt - t) > 0.12 && segmentAt(vt) === seg) {
+            playOrigin = now - vt * 1000;
+            t = vt;
+          }
+        }
       }
     }
     syncUI(t);
@@ -1765,6 +1923,7 @@ function commit(before) {
   cur.future = [];
   updateUndo();
   scheduleSave();
+  refreshStepCard();
 }
 function restore(state) {
   const v = JSON.parse(state);
@@ -1773,6 +1932,8 @@ function restore(state) {
   cur.stickers = v.stickers;
   selected = cur.stickers.find((s) => s.id === sel) || null;
   $("speed").value = String(cur.edit.speed);
+  syncCaption();
+  refreshStepCard();
   fitView();
   renderTimeline();
   setPosition(Math.min(playhead, timing().total));
@@ -2160,6 +2321,16 @@ $("selText").onchange = $("selText").onblur = () => {
 $("selText").onkeydown = (e) => {
   if (e.key === "Enter" || e.key === "Escape") $("selText").blur();
 };
+// In Clipnote's own text boxes, ⌘Z undoes in Clipnote (the browser's own undo jumps between boxes).
+for (const id of ["selText", "stepTitle", "stepText"])
+  $(id).addEventListener("keydown", (e) => {
+    const k = e.key.toLowerCase();
+    if (!(e.metaKey || e.ctrlKey) || (k !== "z" && k !== "y")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.target.blur();
+    k === "y" || e.shiftKey ? redo() : undo();
+  });
 $("selDelete").onclick = () => selected && deleteSticker(selected);
 function deleteSticker(s) {
   const before = snapshot();
@@ -2278,7 +2449,9 @@ function renderTimeline() {
   if (!tlDrag) computeAxis();
   const { start, end, total } = timing();
   $("tTotal").textContent = fmt(total);
-  $("cutReset").hidden = !(start > 0.001 || end < cur.length - 0.001) || cur.kind !== "video";
+  $("cutReset").hidden = !(start > 0.001 || end < cur.length - 0.001 || cur.edit.cuts?.length) || cur.kind !== "video";
+  $("pauseBtn").hidden = cur.kind !== "video";
+  $("cutHint").hidden = cur.kind !== "video" || !!cur.edit.cuts?.length || store.get("clipnote-cut-hint") === "done";
   updateCropReset();
 
   const ruler = $("ruler");
@@ -2294,15 +2467,23 @@ function renderTimeline() {
   rows.textContent = "";
   // The clip stays pinned on top; each sticker gets its own line below, newest first.
   rows.append(clipRow());
+  placeRangeBar();
   for (let i = cur.stickers.length - 1; i >= 0; i--) rows.append(stickerRow(cur.stickers[i]));
   if (!cur.stickers.length)
     rows.append(el("p", "tlempty", "Stickers you add get their own line here. Drag them to choose when they show."));
   updatePlayhead();
 }
+// Everything that is not played: before the start, after the end, and the parts cut out.
+function removedParts() {
+  const { start, end } = timing(),
+    out = [[0, start]];
+  for (const [a, b] of cur.edit.cuts || []) if (b > start && a < end) out.push([Math.max(a, start), Math.min(b, end)]);
+  out.push([end, cur.length]);
+  return out.filter(([a, b]) => b - a > 0.001);
+}
 function cutOverlays(lane) {
-  const { start, end } = timing();
   if (cur.kind !== "video") return;
-  for (const [a, b] of [[0, start], [end, cur.length]])
+  for (const [a, b] of removedParts())
     if (b - a > 0.001) {
       const z = el("div", "lanecut");
       place(z, a, b);
@@ -2355,7 +2536,8 @@ function clipRow() {
   const { start, end, speed } = timing();
   const video = cur.kind === "video";
   const row = el("div", "trow cliprow");
-  const lab = el("div", "tlab", video ? "🎬 Clip" : "🖼 Image");
+  const g = showOf(),
+    lab = el("div", "tlab", video ? "🎬 Clip" : g ? "🖼 Step " + (g.steps.indexOf(cur) + 1) : "🖼 Image");
   lab.style.cursor = "default";
   const lane = el("div", "lane");
   const film = el("div", "film");
@@ -2363,7 +2545,7 @@ function clipRow() {
   const strip = filmStrip(video ? cur.length : end);
   if (strip) film.append(strip);
   lane.append(film);
-  if (video)
+  if (video) {
     for (const [a, b] of [[0, start], [end, cur.length]])
       if (b - a > 0.001) {
         const z = el("div", "cutzone");
@@ -2371,6 +2553,23 @@ function clipRow() {
         if ((b - a) / axisLen > 0.08) z.append(el("span", "", "cut"));
         lane.append(z);
       }
+    // Parts cut out of the middle: hatched, with a button to bring them back.
+    (cur.edit.cuts || []).forEach(([a, b], i) => {
+      if (b <= start || a >= end) return;
+      const z = el("div", "cutzone mid");
+      place(z, Math.max(a, start), Math.min(b, end));
+      const back = el("button", "restore", (b - a) / axisLen > 0.09 ? "↺ Bring back" : "↺");
+      back.title = "Bring back this part (" + (b - a).toFixed(1) + " s)";
+      back.dataset.restore = i;
+      z.append(back);
+      lane.append(z);
+    });
+    if (rangeSel) {
+      const r = el("div", "rangesel");
+      place(r, rangeSel.a, rangeSel.b);
+      lane.append(r);
+    }
+  }
   const block = el("div", "block clipblock");
   place(block, start, end);
   if (video) {
@@ -2464,11 +2663,16 @@ function sourceAt(e) {
   return clamp((e.clientX - r.left) / r.width, 0, 1) * axisLen;
 }
 function seekSource(s) {
-  const { start, end, speed } = timing();
-  setPosition((clamp(s, start, end) - start) / speed);
+  const { start, end } = timing();
+  setPosition(toOut(clamp(s, start, end)));
 }
 tracks.onpointerdown = (e) => {
-  if (!cur || exporting || e.button !== 0 || e.target.closest(".tlab")) return;
+  if (!cur || exporting || e.button !== 0 || e.target.closest(".tlab, .rangebar")) return;
+  const back = e.target.closest("[data-restore]");
+  if (back) {
+    restoreCut(Number(back.dataset.restore));
+    return;
+  }
   stopPlay();
   e.preventDefault();
   tracks.setPointerCapture(e.pointerId);
@@ -2476,7 +2680,13 @@ tracks.onpointerdown = (e) => {
     h = e.target.closest("[data-drag]"),
     type = h?.dataset.drag;
   if (!type) {
+    // On the clip itself, dragging picks a part to cut out; a plain click just moves the playhead.
+    if (cur.kind === "video" && e.target.closest(".cliprow")) {
+      tlDrag = { type: "range", s0: s, x0: e.clientX, moved: false };
+      return;
+    }
     tlDrag = { type: "seek" };
+    if (rangeSel) clearRange();
     seekSource(s);
     return;
   }
@@ -2500,7 +2710,15 @@ tracks.onpointermove = (e) => {
     { start, end, speed } = timing(),
     MIN = 0.2 * speed;
   if (d.type === "seek") seekSource(s);
-  else if (d.sticker) {
+  else if (d.type === "range") {
+    if (!d.moved && Math.abs(e.clientX - d.x0) < 5) return;
+    d.moved = true;
+    rangeSel = { a: clamp(Math.min(d.s0, s), 0, cur.length), b: clamp(Math.max(d.s0, s), 0, cur.length) };
+    renderTimeline();
+    // Show the frame at the moving edge.
+    const { start: s0, end: s1 } = timing();
+    if (s > s0 && s < s1) seekSource(s);
+  } else if (d.sticker) {
     let { a, b } = d;
     const ds = s - d.s0;
     if (d.type === "move") {
@@ -2528,9 +2746,215 @@ function endTimelineDrag() {
   const d = tlDrag;
   if (!d) return;
   tlDrag = null;
+  if (d.type === "range") {
+    if (!d.moved) {
+      clearRange();
+      seekSource(d.s0);
+    } else if (rangeSel.b - rangeSel.a < 0.05) clearRange();
+    renderTimeline();
+    return;
+  }
   if (d.type !== "seek") commit(d.before);
   renderTimeline();
 }
+
+/* Cutting out a part of the middle */
+let rangeSel = null;
+function clearRange() {
+  rangeSel = null;
+  $("rangeBar").hidden = true;
+}
+function placeRangeBar() {
+  const bar = $("rangeBar");
+  bar.hidden = !rangeSel || !cur || cur.kind !== "video";
+  if (bar.hidden) return;
+  const len = rangeSel.b - rangeSel.a;
+  $("rangeLen").textContent = len.toFixed(1) + " s";
+  bar.style.left = across((rangeSel.a + len / 2) / axisLen);
+}
+// Removes a stretch of the clip. Touching the start or the end simply trims; otherwise it becomes a cut.
+function removePart(a, b, quiet) {
+  const e = cur.edit,
+    { start, end } = timing();
+  a = clamp(a, start, end);
+  b = clamp(b, start, end);
+  if (b - a < 0.05) return false;
+  if (keptLength({ ...e, cuts: mergeCuts([...(e.cuts || []), [a, b]]) }) < 0.2) {
+    if (!quiet) toast("That would remove the whole clip.");
+    return false;
+  }
+  if (a <= start + 0.05) e.start = b;
+  else if (b >= end - 0.05) e.end = a;
+  else e.cuts = mergeCuts([...(e.cuts || []), [a, b]]);
+  return true;
+}
+function mergeCuts(list) {
+  const sorted = list.map(([a, b]) => [Math.min(a, b), Math.max(a, b)]).sort((x, y) => x[0] - y[0]),
+    out = [];
+  for (const c of sorted) {
+    const last = out.at(-1);
+    if (last && c[0] <= last[1] + 0.05) last[1] = Math.max(last[1], c[1]);
+    else out.push(c);
+  }
+  return out;
+}
+function removeRange() {
+  if (!rangeSel || !cur) return;
+  stopPlay();
+  const before = snapshot(),
+    { a, b } = rangeSel;
+  if (!removePart(a, b)) return;
+  clearRange();
+  store.set("clipnote-cut-hint", "done");
+  commit(before);
+  renderTimeline();
+  seekSource(a);
+  toast("Cut out " + (b - a).toFixed(1) + " s. Undo brings it back.");
+}
+function restoreCut(i) {
+  const before = snapshot();
+  cur.edit.cuts.splice(i, 1);
+  commit(before);
+  renderTimeline();
+  setPosition(Math.min(playhead, timing().total));
+}
+$("rangeRemove").onclick = removeRange;
+
+/* Looking at what changes on screen over time (for removing pauses, finding key moments and
+   estimating GIF sizes). One trip through a recording, six times a second, records what share
+   of the picture changed since the previous sample (a moving mouse pointer barely registers)
+   and what a small GIF of it really costs. It runs quietly after a clip opens; anything that
+   needs it sooner just waits for the same trip. */
+let studyHold = false;
+function analyzeMotion(p, onProgress) {
+  if (p.motion) return Promise.resolve(p.motion);
+  if (onProgress) (p.motionHooks ||= new Set()).add(onProgress);
+  p.motionRun ||= studyClip(p).finally(() => {
+    p.motionRun = null;
+    p.motionHooks = null;
+  });
+  return p.motionRun;
+}
+async function studyClip(p) {
+  const dt = 1 / 6,
+    W = 320,
+    H = Math.max(8, Math.round((W * p.height) / p.width)),
+    GW = Math.min(480, p.width),
+    GH = Math.max(8, Math.round((GW * p.height) / p.width)),
+    n = Math.max(2, Math.floor(p.length / dt));
+  const v = el("video");
+  v.muted = true;
+  v.preload = "auto";
+  await waitEvent(v, "loadeddata", () => (v.src = p.url));
+  const c = el("canvas"),
+    g = el("canvas");
+  c.width = W;
+  c.height = H;
+  g.width = GW;
+  g.height = GH;
+  const ctx = c.getContext("2d", { willReadFrequently: true }),
+    gctx = g.getContext("2d", { willReadFrequently: true }),
+    change = new Float32Array(n),
+    pixels = new Uint32Array(n),
+    gif = new Float32Array(n), // bytes each sample adds to a small GIF
+    enc = createDeltaGif(window.GifEnc, GW, GH);
+  let prev = null,
+    written = 0;
+  const reader = frameReader(v, 6);
+  try {
+    for (let i = 0; i < n; i++) {
+      if (p.closed) throw new Error("closed");
+      while (studyHold) await pause(250);
+      await reader.at(Math.min(i * dt, p.length - 0.02));
+      ctx.drawImage(v, 0, 0, W, H);
+      const px = ctx.getImageData(0, 0, W, H).data;
+      if (prev) {
+        let changed = 0;
+        for (let j = 0; j < px.length; j += 4)
+          if (Math.abs(px[j] - prev[j]) + Math.abs(px[j + 1] - prev[j + 1]) + Math.abs(px[j + 2] - prev[j + 2]) > 48) changed++;
+        change[i] = changed / (W * H);
+        pixels[i] = changed;
+      }
+      prev = px;
+      gctx.drawImage(v, 0, 0, GW, GH);
+      enc.add(gctx.getImageData(0, 0, GW, GH).data, 100, 256);
+      // A frame is written when the next one arrives, so the bytes belong to the previous sample.
+      if (i) gif[i - 1] = enc.frameBytes() - written;
+      written = enc.frameBytes();
+      const f = (i + 1) / n;
+      p.motionHooks?.forEach((h) => h(f));
+      if (i % 4 === 3) await pause(0);
+    }
+    enc.finish();
+    gif[n - 1] = enc.frameBytes() - written;
+  } finally {
+    v.removeAttribute("src");
+    v.load();
+  }
+  return (p.motion = { dt, change, pixels, gif, gifArea: GW * GH });
+}
+// Stretches of at least `min` seconds where nothing changes. Only something as small as a
+// blinking text cursor still counts as "nothing"; a moving mouse pointer or typing does not.
+function stillStretches(motion, min = 1.2) {
+  const { dt, pixels } = motion,
+    out = [];
+  let from = null;
+  for (let i = 1; i <= pixels.length; i++) {
+    const still = i < pixels.length && pixels[i] <= 6;
+    if (still && from === null) from = (i - 1) * dt;
+    if (!still && from !== null) {
+      const to = (i - 1) * dt;
+      if (to - from >= min) out.push([from, to]);
+      from = null;
+    }
+  }
+  return out;
+}
+async function removePauses() {
+  if (!cur || cur.kind !== "video" || exporting) return;
+  stopPlay();
+  const p = cur;
+  lockUI(true);
+  toast("Looking for pauses…", 0);
+  let motion;
+  try {
+    motion = await analyzeMotion(p, (f) => toast("Looking for pauses… " + Math.round(f * 100) + "%", 0));
+  } catch (err) {
+    lockUI(false);
+    toast("Could not look through this clip. " + (err.message || ""));
+    return;
+  }
+  lockUI(false);
+  if (cur !== p) return;
+  const before = snapshot(),
+    keep = 0.35;
+  let removed = 0,
+    count = 0;
+  for (const [a, b] of stillStretches(motion)) {
+    const c0 = a + keep,
+      c1 = b - keep;
+    // Leave alone any pause where a sticker begins: that moment matters.
+    if (c1 - c0 < 0.4 || cur.stickers.some((st) => st.from != null && st.from > c0 && st.from < c1)) continue;
+    const kept = keptLength(cur.edit);
+    if (removePart(c0, c1, true)) {
+      removed += kept - keptLength(cur.edit);
+      count++;
+    }
+  }
+  if (!count) {
+    toast("No long pauses found in this clip.");
+    return;
+  }
+  commit(before);
+  renderTimeline();
+  setPosition(0);
+  toast("Cut out " + count + (count === 1 ? " pause" : " pauses") + " (" + removed.toFixed(1) + " s). Undo brings them back.", 5000);
+}
+$("pauseBtn").onclick = removePauses;
+$("rangeCancel").onclick = () => {
+  clearRange();
+  renderTimeline();
+};
 tracks.onpointerup = tracks.onpointercancel = tracks.onlostpointercapture = endTimelineDrag;
 
 /* Cutting at the playhead */
@@ -2558,9 +2982,12 @@ $("cutReset").onclick = () => {
   const before = snapshot();
   cur.edit.start = 0;
   cur.edit.end = cur.length;
+  cur.edit.cuts = [];
+  clearRange();
   commit(before);
   renderTimeline();
   setPosition(0);
+  toast("The whole clip is back.");
 };
 $("speed").onchange = () => {
   stopPlay();
@@ -2574,7 +3001,7 @@ $("speed").onchange = () => {
 /* ---------- Keyboard ---------- */
 
 document.addEventListener("keydown", (e) => {
-  if (!cur || $("editor").hidden || exporting || $("exportDialog").open) return;
+  if (!cur || $("editor").hidden || exporting || $("exportDialog").open || $("momentDialog").open) return;
   if (e.target.closest?.("input, select, textarea")) return;
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === "z") {
@@ -2598,14 +3025,564 @@ document.addEventListener("keydown", (e) => {
     setPosition(playhead + (e.shiftKey ? 1 : 0.1) * (e.key === "ArrowLeft" ? -1 : 1));
   } else if (e.key === "[") cut("start");
   else if (e.key === "]") cut("end");
-  else if ((e.key === "Delete" || e.key === "Backspace") && selected) {
+  else if ((e.key === "Delete" || e.key === "Backspace") && rangeSel) {
+    e.preventDefault();
+    removeRange();
+  } else if ((e.key === "Delete" || e.key === "Backspace") && selected) {
     e.preventDefault();
     deleteSticker(selected);
   } else if (e.key === "Escape") {
     if (cropping) toggleCrop();
-    else select(null);
+    else if (rangeSel) {
+      clearRange();
+      renderTimeline();
+    } else select(null);
   }
 });
+
+/* ======================================================================
+   Slideshows: the key screens of a recording as numbered steps with captions,
+   for how-to guides. Each step is a still picture with its own stickers.
+   ====================================================================== */
+
+// Caption band sizes, as shares of the picture width (the editor's band uses the same).
+const CAP = { band: 0.1, pad: 0.022, gap: 0.018, num: 0.05, title: 0.024, text: 0.0175, count: 0.016 };
+
+function showOf(p = cur) {
+  return p?.guide || null;
+}
+function owner(p) {
+  return p?.guide || p;
+}
+function newDbId() {
+  return crypto.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2);
+}
+function withCur(p, fn) {
+  const keep = cur;
+  cur = p;
+  try {
+    return fn();
+  } finally {
+    cur = keep;
+  }
+}
+function stepLen(step) {
+  return withCur(step, () => timing().total);
+}
+// Length of everything that is exported, and where the screen is in it.
+function outTotal() {
+  const g = showOf();
+  return g ? g.steps.reduce((n, step) => n + stepLen(step), 0) : timing().total;
+}
+function outNow() {
+  const g = showOf();
+  if (!g) return playhead;
+  let a = 0;
+  for (const step of g.steps) {
+    const d = stepLen(step);
+    if (step === cur) return a + Math.min(playhead, d - 0.001);
+    a += d;
+  }
+  return 0;
+}
+function stepAt(g, t) {
+  let a = 0;
+  for (let i = 0; i < g.steps.length; i++) {
+    const d = stepLen(g.steps[i]);
+    if (t < a + d || i === g.steps.length - 1) return { i, local: clamp(t - a, 0, d - 0.001) };
+    a += d;
+  }
+}
+// The exported picture at output time t: the clip, or the slideshow with its caption band.
+function drawOut(ctx, W, H, t) {
+  const g = showOf();
+  if (!g) return renderFrame(ctx, W, H, t);
+  const { i, local } = stepAt(g, t),
+    step = g.steps[i],
+    band = Math.round(W * CAP.band),
+    ih = H - band;
+  ctx.fillStyle = "#f2f3f7";
+  ctx.fillRect(0, 0, W, ih);
+  const [, , cw, ch] = step.edit.crop,
+    k = Math.min(W / cw, ih / ch),
+    dw = Math.round(cw * k),
+    dh = Math.round(ch * k);
+  ctx.save();
+  ctx.translate(Math.round((W - dw) / 2), Math.round((ih - dh) / 2));
+  withCur(step, () => renderFrame(ctx, dw, dh, local));
+  ctx.restore();
+  drawCaption(ctx, ih, W, band, i + 1, g.steps.length, step.edit.title, step.edit.text);
+}
+function drawCaption(ctx, y, W, H, n, of, title, text) {
+  ctx.save();
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, y, W, H);
+  ctx.fillStyle = "#e6e6ee";
+  ctx.fillRect(0, y, W, Math.max(1, Math.round(W / 1000)));
+  const pad = W * CAP.pad,
+    r = (W * CAP.num) / 2,
+    cy = y + H / 2;
+  ctx.fillStyle = "#4262ff";
+  ctx.beginPath();
+  ctx.arc(pad + r, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = `700 ${W * CAP.title}px ${FONT}`;
+  ctx.fillText(String(n), pad + r, cy + W * 0.001);
+  const count = n + " / " + of;
+  ctx.font = `${W * CAP.count}px ui-monospace, Menlo, monospace`;
+  const countW = ctx.measureText(count).width;
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#8a8aa0";
+  ctx.fillText(count, W - pad, cy);
+  const x = pad + 2 * r + W * CAP.gap,
+    maxW = W - x - pad - countW - W * CAP.gap,
+    lines = [];
+  if (title?.trim()) lines.push([`700 ${W * CAP.title}px ${FONT}`, "#1d1d2b", title.trim(), W * CAP.title * 1.3]);
+  if (text?.trim()) lines.push([`${W * CAP.text}px ${FONT}`, "#55556a", text.trim(), W * CAP.text * 1.4]);
+  let ty = cy - lines.reduce((sum, l) => sum + l[3], 0) / 2;
+  ctx.textAlign = "left";
+  for (const [font, color, str, lh] of lines) {
+    ctx.font = font;
+    ctx.fillStyle = color;
+    ctx.fillText(ellipsize(ctx, str, maxW), x, ty + lh / 2);
+    ty += lh;
+  }
+  ctx.restore();
+}
+function ellipsize(ctx, str, max) {
+  if (ctx.measureText(str).width <= max) return str;
+  while (str.length > 1 && ctx.measureText(str + "…").width > max) str = str.slice(0, -1);
+  return str.trimEnd() + "…";
+}
+
+function newShow(name, sourceId) {
+  return { id: nextId++, dbId: newDbId(), created: Date.now(), kind: "slides", name, steps: [], active: 0, sourceId, mediaDirty: true };
+}
+function makeStep(g, picture, crop, stickers = [], at = null) {
+  const step = imageProject(picture, "Step");
+  step.guide = g;
+  step.at = at; // where in the recording it came from
+  if (crop) step.edit.crop = [...crop];
+  step.edit.title = "";
+  step.edit.text = "";
+  step.stickers = stickers;
+  return step;
+}
+function showStep(g, i) {
+  g.active = clamp(i, 0, g.steps.length - 1);
+  openProject(g);
+}
+
+/* The steps panel */
+function renderSteps() {
+  const g = showOf(),
+    list = $("stepList");
+  if (!g) return;
+  list.textContent = "";
+  g.steps.forEach((step, i) => {
+    const li = el("li", "step" + (step === cur ? " on" : ""));
+    li.tabIndex = 0;
+    const c = el("canvas");
+    c.width = 192;
+    c.height = 120;
+    paintStepThumb(c, step);
+    const title = el("div", "steptitle");
+    title.append(el("b", "", String(i + 1)), el("span", step.edit.title ? "" : "faint", step.edit.title || "No title yet"));
+    const acts = el("div", "stepacts");
+    const act = (icon, label, run, off, flip) => {
+      const b = el("button", "icon");
+      b.type = "button";
+      b.title = label;
+      b.setAttribute("aria-label", label);
+      b.innerHTML = `<svg${flip ? ' style="transform:rotate(180deg)"' : ""}><use href="#${icon}"/></svg>`;
+      b.disabled = !!off;
+      b.onclick = (e) => {
+        e.stopPropagation();
+        run();
+      };
+      return b;
+    };
+    acts.append(
+      act("i-up", "Move up", () => moveStep(i, -1), i === 0),
+      act("i-up", "Move down", () => moveStep(i, 1), i === g.steps.length - 1, true),
+      act("i-trash", "Delete step", () => deleteStep(i), g.steps.length === 1),
+    );
+    li.append(c, title, acts);
+    li.onclick = () => step !== cur && showStep(g, i);
+    li.onkeydown = (e) => e.key === "Enter" && e.target === li && li.click();
+    list.append(li);
+  });
+  $("stepsCount").textContent = g.steps.length + (g.steps.length === 1 ? " step" : " steps");
+  list.querySelector(".on")?.scrollIntoView({ block: "nearest" });
+}
+function paintStepThumb(c, step) {
+  const ctx = c.getContext("2d"),
+    [, , cw, ch] = step.edit.crop,
+    k = Math.min(c.width / cw, c.height / ch),
+    w = Math.round(cw * k),
+    h = Math.round(ch * k);
+  ctx.clearRect(0, 0, c.width, c.height);
+  ctx.save();
+  ctx.translate(Math.round((c.width - w) / 2), Math.round((c.height - h) / 2));
+  withCur(step, () => renderFrame(ctx, w, h, Math.min(1.2, stepLen(step) - 0.01)));
+  ctx.restore();
+}
+// Keeps the current step's card in the list up to date after an edit.
+function refreshStepCard() {
+  const g = showOf();
+  if (!g) return;
+  const li = $("stepList").children[g.steps.indexOf(cur)];
+  if (!li) return renderSteps();
+  paintStepThumb(li.querySelector("canvas"), cur);
+  const span = li.querySelector(".steptitle span");
+  span.textContent = cur.edit.title || "No title yet";
+  span.className = cur.edit.title ? "" : "faint";
+}
+function moveStep(i, d) {
+  const g = showOf(),
+    j = i + d;
+  if (!g || j < 0 || j >= g.steps.length) return;
+  [g.steps[i], g.steps[j]] = [g.steps[j], g.steps[i]];
+  g.mediaDirty = true;
+  g.active = g.steps.indexOf(cur);
+  renderSteps();
+  syncCaption();
+  renderTimeline();
+  scheduleSave(g);
+}
+function deleteStep(i) {
+  const g = showOf();
+  if (!g || g.steps.length < 2) return;
+  const [gone] = g.steps.splice(i, 1);
+  g.mediaDirty = true;
+  scheduleSave(g);
+  showStep(g, gone === cur ? Math.min(i, g.steps.length - 1) : g.steps.indexOf(cur));
+  toast("Step " + (i + 1) + " deleted.", 6000, {
+    label: "Undo",
+    run: () => {
+      if (!projects.includes(g)) return;
+      g.steps.splice(Math.min(i, g.steps.length), 0, gone);
+      g.mediaDirty = true;
+      scheduleSave(g);
+      showStep(g, i);
+    },
+  });
+}
+$("addMoments").onclick = async () => {
+  const g = showOf();
+  if (!g || exporting) return;
+  const src = await showSource(g);
+  if (!src) {
+    toast("The recording this slideshow came from is no longer saved. You can still add pictures from files.", 6000);
+    return;
+  }
+  openMoments(src, g);
+};
+$("addPicture").onclick = () => $("picFile").click();
+$("picFile").onchange = async (e) => {
+  const f = e.target.files[0],
+    g = showOf();
+  e.target.value = "";
+  if (!f || !g) return;
+  const url = URL.createObjectURL(f);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const step = makeStep(g, await createImageBitmap(img));
+    g.steps.splice(g.active + 1, 0, step);
+    g.mediaDirty = true;
+    showStep(g, g.active + 1);
+    scheduleSave(g);
+  } catch (err) {
+    toast("Could not open that picture. " + (err.message || ""));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+};
+// The recording a slideshow came from: open in a tab, or still saved in this browser.
+async function showSource(g) {
+  const open = projects.find((p) => p.dbId === g.sourceId && p.kind === "video");
+  if (open) return open;
+  if (g.sourceProject) return g.sourceProject;
+  try {
+    const c = (await Library.list()).find((x) => x.id === g.sourceId);
+    const media = c && (await Library.media(c.id));
+    if (!media) return null;
+    const p = await videoProject(URL.createObjectURL(media), c.length, c.name);
+    Object.assign(p, { dbId: c.id, edit: c.edit, stickers: c.stickers || [], shotTimes: c.shotTimes || [] });
+    return (g.sourceProject = p);
+  } catch {
+    return null;
+  }
+}
+
+/* The caption under each step */
+let capBefore = null;
+function syncCaption() {
+  const g = showOf();
+  $("capBand").hidden = !g;
+  $("canvasBox").classList.toggle("withcap", !!g);
+  if (!g) return;
+  const i = g.steps.indexOf(cur);
+  $("capNum").textContent = String(i + 1);
+  $("capCount").textContent = i + 1 + " / " + g.steps.length;
+  if (document.activeElement !== $("stepTitle")) $("stepTitle").value = cur.edit.title || "";
+  if (document.activeElement !== $("stepText")) $("stepText").value = cur.edit.text || "";
+}
+for (const [id, key] of [
+  ["stepTitle", "title"],
+  ["stepText", "text"],
+]) {
+  const input = $(id);
+  input.onfocus = () => (capBefore = snapshot());
+  input.oninput = () => {
+    if (!showOf()) return;
+    cur.edit[key] = input.value;
+    refreshStepCard();
+    scheduleSave();
+  };
+  input.onchange = input.onblur = () => {
+    if (capBefore && showOf()) commit(capBefore);
+    capBefore = snapshot();
+  };
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (id === "stepTitle") $("stepText").focus();
+      else input.blur();
+    }
+    if (e.key === "Escape") input.blur();
+  };
+}
+
+/* Picking the screens: the moments where something changed on screen, then settled */
+function keyMoments(p, m, g) {
+  const segs = segments(p.edit),
+    n = m.change.length,
+    dt = m.dt,
+    kept = (s) => segs.some(([a, b]) => s >= a - 0.001 && s < b),
+    used = g ? g.steps.filter((st) => st.at != null).map((st) => st.at) : [],
+    out = [];
+  const add = (s, on, why) => {
+    s = clamp(s, 0, p.length - 0.05);
+    if (!kept(s) || used.some((u) => Math.abs(u - s) < 0.5) || out.some((o) => Math.abs(o.s - s) < 0.8)) return false;
+    out.push({ s, on, why });
+    return true;
+  };
+  for (const at of p.shotTimes || []) add(at, !g, "Your screenshot");
+  add(segs[0][0] + 0.05, !g, "Start");
+  const bursts = [];
+  for (let i = 1; i < n; ) {
+    if (m.change[i] <= 0.004) {
+      i++;
+      continue;
+    }
+    let j = i,
+      sum = 0,
+      calm = 0;
+    while (j < n && calm < 3) {
+      sum += m.change[j];
+      calm = m.change[j] < 0.0015 ? calm + 1 : 0;
+      j++;
+    }
+    bursts.push({ s: (calm >= 3 ? j - 2 : n - 1) * dt, score: sum });
+    i = j;
+  }
+  bursts.sort((a, b) => b.score - a.score);
+  let picked = 0;
+  for (const b of bursts) if (add(b.s, !g && picked < 6, "") && !g && picked < 6) picked++;
+  if (bursts.length) add(segs.at(-1)[1] - 0.1, !g, "End");
+  // A few more to choose from, every two seconds.
+  for (const [a, b] of segs) for (let s = a + 1; s < b && out.length < 30; s += 2) add(s, false, "");
+  return out.sort((x, y) => x.s - y.s);
+}
+let momentState = null;
+async function openMoments(src, g = null) {
+  if (exporting) return;
+  stopPlay();
+  const dlg = $("momentDialog"),
+    grid = $("momentGrid"),
+    state = (momentState = { src, g, list: [] });
+  grid.textContent = "";
+  $("momentTitle").textContent = g ? "Add screens to your slideshow" : "Pick the screens for your slideshow";
+  $("momentGo").querySelector("span").textContent = g ? "Add screens" : "Make slideshow";
+  $("momentGo").disabled = true;
+  $("momentCount").textContent = "";
+  $("momentNote").textContent = "Finding the key moments…";
+  dlg.returnValue = "";
+  dlg.showModal();
+  const live = () => momentState === state && dlg.open;
+  let m;
+  try {
+    m = await analyzeMotion(src, (f) => live() && ($("momentNote").textContent = "Finding the key moments… " + Math.round(f * 100) + "%"));
+  } catch (err) {
+    if (live()) $("momentNote").textContent = "Could not look through this recording. " + (err.message || "");
+    return;
+  }
+  if (!live()) return;
+  state.list = keyMoments(src, m, g);
+  $("momentNote").textContent = g
+    ? "Click the screens you want to add. Screens already in your slideshow are left out."
+    : "Clipnote picked the moments where something changed on screen. Click a screen to add it or leave it out.";
+  for (const mo of state.list) {
+    const b = el("button", "moment" + (mo.on ? " on" : ""));
+    b.type = "button";
+    mo.canvas = el("canvas");
+    mo.canvas.width = 320;
+    mo.canvas.height = 200;
+    const tick = el("span", "tick");
+    tick.innerHTML = '<svg><use href="#i-check"/></svg>';
+    const label = el("span", "", fmt(toOutOf(src, mo.s)).replace(/\.\d$/, ""));
+    if (mo.why) label.append(" ", el("em", "", "· " + mo.why));
+    b.append(mo.canvas, tick, label);
+    b.setAttribute("aria-pressed", String(mo.on));
+    b.onclick = () => {
+      mo.on = !mo.on;
+      b.classList.toggle("on", mo.on);
+      b.setAttribute("aria-pressed", String(mo.on));
+      momentCount();
+    };
+    grid.append(b);
+  }
+  momentCount();
+  // Fill in the pictures.
+  const v = el("video");
+  v.muted = true;
+  v.preload = "auto";
+  try {
+    await waitEvent(v, "loadeddata", () => (v.src = src.url));
+    const [cx, cy, cw, ch] = src.edit.crop;
+    for (const mo of state.list) {
+      if (!live()) break;
+      await seekVideo(v, mo.s);
+      const ctx = mo.canvas.getContext("2d"),
+        k = Math.min(320 / cw, 200 / ch),
+        w = cw * k,
+        h = ch * k;
+      ctx.drawImage(v, cx, cy, cw, ch, (320 - w) / 2, (200 - h) / 2, w, h);
+    }
+  } catch {
+  } finally {
+    v.removeAttribute("src");
+    v.load();
+  }
+}
+function toOutOf(p, s) {
+  return withCur(p, () => toOut(s));
+}
+function momentCount() {
+  const n = momentState?.list.filter((m) => m.on).length || 0;
+  $("momentCount").textContent = n ? n + (n === 1 ? " screen" : " screens") + " picked" : "Pick at least one screen";
+  $("momentGo").disabled = !n;
+}
+$("momentDialog").onclose = () => {
+  const state = momentState;
+  momentState = null;
+  if ($("momentDialog").returnValue !== "make" || !state) return;
+  const picks = state.list.filter((m) => m.on).sort((a, b) => a.s - b.s);
+  if (picks.length) buildSteps(state.src, state.g, picks);
+};
+$("slidesBtn").onclick = () => cur?.kind === "video" && openMoments(cur);
+
+async function buildSteps(src, g, picks) {
+  lockUI(true);
+  const v = el("video"),
+    made = [];
+  v.muted = true;
+  v.preload = "auto";
+  try {
+    await waitEvent(v, "loadeddata", () => (v.src = src.url));
+    for (const [i, mo] of picks.entries()) {
+      toast("Making your slideshow · " + (i + 1) + " of " + picks.length, 0);
+      await seekVideo(v, mo.s);
+      const c = el("canvas");
+      c.width = src.width;
+      c.height = src.height;
+      c.getContext("2d").drawImage(v, 0, 0);
+      // Stickers showing at that moment come along, and stay for the whole step.
+      const stickers = src.stickers
+        .filter((st) => (st.from == null || st.from <= mo.s + 0.01) && (st.until == null || st.until > mo.s))
+        .map((st) => ({ ...structuredClone(st), id: nextId++, from: null, until: null }));
+      made.push({ c, at: mo.s, stickers });
+    }
+  } catch (err) {
+    toast("Could not make the slideshow. " + (err.message || ""));
+    return;
+  } finally {
+    v.removeAttribute("src");
+    v.load();
+    lockUI(false);
+  }
+  const show = g || newShow(src.name + " · slideshow", src.dbId),
+    steps = made.map((m) => makeStep(show, m.c, src.edit.crop, m.stickers, m.at));
+  if (g) {
+    // In recording order among the steps that came from it; pictures stay where they are.
+    for (const step of steps) {
+      const i = g.steps.findIndex((x) => x.at != null && x.at > step.at);
+      g.steps.splice(i < 0 ? g.steps.length : i, 0, step);
+    }
+  } else {
+    show.steps = steps;
+    projects.push(show);
+  }
+  show.mediaDirty = true;
+  show.active = show.steps.indexOf(steps[0]);
+  openProject(show);
+  saveProject(show);
+  toast(
+    g
+      ? "Added " + steps.length + (steps.length === 1 ? " screen." : " screens.")
+      : "Your slideshow is ready. Give each step a title under the picture, add stickers, then Export.",
+    7000,
+  );
+}
+
+/* Saving a slideshow: its steps' pictures (PNG) and edits */
+async function saveShow(g) {
+  for (const step of g.steps) step.blob ||= await toBlob(step.source, "image/png");
+  const media = g.mediaDirty ? g.steps.map((step) => step.blob) : null;
+  g.mediaDirty = false;
+  try {
+    const c = el("canvas");
+    c.width = 400;
+    c.height = 250;
+    paintStepThumb(c, g.steps[0]);
+    const thumb = (await toBlob(c, "image/jpeg", 0.8)) || g.thumb || null;
+    const meta = {
+      id: g.dbId,
+      name: g.name,
+      kind: "slides",
+      created: g.created,
+      updated: Date.now(),
+      sourceId: g.sourceId,
+      steps: g.steps.map((step) => ({ edit: step.edit, stickers: step.stickers, width: step.width, height: step.height, at: step.at ?? null })),
+      thumb,
+      size: g.steps.reduce((n, step) => n + (step.blob?.size || 0), 0),
+    };
+    await Library.save(meta, media);
+    if (g.deleted) return Library.remove(g.dbId).catch(() => {});
+    g.thumb = thumb;
+  } catch (err) {
+    if (media) g.mediaDirty = true;
+    throw err;
+  }
+}
+async function openSavedShow(c, media) {
+  const g = newShow(c.name, c.sourceId);
+  Object.assign(g, { dbId: c.id, created: c.created, thumb: c.thumb, mediaDirty: false });
+  for (const [i, st] of c.steps.entries()) {
+    const step = makeStep(g, await createImageBitmap(media[i]), null, st.stickers || [], st.at);
+    step.edit = st.edit;
+    step.blob = media[i];
+    nextId = Math.max(nextId, ...step.stickers.map((x) => (x.id || 0) + 1));
+    g.steps.push(step);
+  }
+  return g;
+}
 
 /* ======================================================================
    Export: GIF, MP4 and PNG, with visual quality previews
@@ -2614,14 +3591,14 @@ document.addEventListener("keydown", (e) => {
 const MP4_OK = !!(window.VideoEncoder && window.Mp4Muxer && window.VideoFrame);
 const PRESETS = {
   gif: [
-    { id: "small", name: "Small", edge: 480, fps: 8, colors: 64, hint: "Fast to load" },
-    { id: "balanced", name: "Balanced", edge: 720, fps: 12, colors: 128, hint: "Good for READMEs" },
-    { id: "sharp", name: "Sharp", edge: 1080, fps: 15, colors: 256, hint: "Crisp, bigger file" },
+    { id: "small", name: "Small", edge: 720, fps: 12, colors: 128, hint: "Quick to load" },
+    { id: "medium", name: "Medium", edge: 1080, fps: 15, colors: 256, hint: "Good for READMEs" },
+    { id: "large", name: "Large", edge: 1600, fps: 20, colors: 256, hint: "Crisp and smooth" },
   ],
   mp4: [
-    { id: "small", name: "Small", edge: 720, fps: 30, bitrate: 1.2e6, hint: "Quick to share" },
-    { id: "balanced", name: "Balanced", edge: 1280, fps: 30, bitrate: 2.5e6, hint: "Good for READMEs" },
-    { id: "sharp", name: "Sharp", edge: 1920, fps: 30, bitrate: 5e6, hint: "Full detail" },
+    { id: "small", name: "Small", edge: 1280, fps: 30, bitrate: 2.5e6, hint: "Quick to share" },
+    { id: "medium", name: "Medium", edge: 1920, fps: 30, bitrate: 5e6, hint: "Good for READMEs" },
+    { id: "large", name: "Large", edge: 2560, fps: 30, bitrate: 9e6, hint: "Full detail" },
   ],
   png: [
     { id: "half", name: "Smaller", scale: 0.5, hint: "Half size" },
@@ -2633,20 +3610,24 @@ const FORMAT_INFO = {
   mp4: { name: "MP4", note: "Much smaller and sharper. GitHub plays it inline when you drag it into a README or issue." },
   png: { name: "PNG", note: "A still picture of the current frame, stickers included." },
 };
-let exportPrefs = { format: "gif", gif: "balanced", mp4: "balanced", png: "full" };
+let exportPrefs = { format: "gif", gif: "medium", mp4: "medium", png: "full" };
 try {
   Object.assign(exportPrefs, JSON.parse(store.get("clipnote-export") || "{}"));
 } catch {}
+// Older saved choices used Balanced / Sharp.
+for (const f of ["gif", "mp4"]) exportPrefs[f] = { balanced: "medium", sharp: "large" }[exportPrefs[f]] || exportPrefs[f];
 if (!MP4_OK && exportPrefs.format === "mp4") exportPrefs.format = "gif";
 let estToken = 0,
   estRun = Promise.resolve();
 
 function outSize(preset) {
-  const [, , cw, ch] = cur.edit.crop,
-    long = Math.max(cw, ch);
+  const g = showOf(),
+    [, , cw, ch] = (g ? g.steps[0] : cur).edit.crop,
+    band = g ? CAP.band : 0, // a slideshow adds its caption band under the picture
+    long = Math.max(cw, ch + cw * band);
   const k = preset.scale ?? Math.min(1, preset.edge / long);
   let w = Math.max(2, Math.round(cw * k)),
-    h = Math.max(2, Math.round(ch * k));
+    h = Math.max(2, Math.round(ch * k) + Math.round(w * band));
   if (exportPrefs.format === "mp4") {
     w -= w % 2;
     h -= h % 2;
@@ -2654,12 +3635,12 @@ function outSize(preset) {
   return { w, h };
 }
 function frameTimes(fps) {
-  const { total } = timing(),
+  const total = outTotal(),
     n = Math.max(1, Math.ceil(total * fps - 1e-6));
   return Array.from({ length: n + 1 }, (_, i) => Math.min(total, i / fps));
 }
 function animated() {
-  return cur.kind === "video" || cur.stickers.length > 0;
+  return cur.kind === "video" || cur.stickers.length > 0 || !!showOf();
 }
 
 function openExport() {
@@ -2690,7 +3671,7 @@ function renderFormats() {
     box.append(b);
   }
   $("formatNote").textContent =
-    FORMAT_INFO[exportPrefs.format].note +
+    (showOf() && exportPrefs.format === "png" ? "A still picture of this step, with its caption." : FORMAT_INFO[exportPrefs.format].note) +
     (!MP4_OK && exportPrefs.format === "gif" ? " MP4 export needs Chrome, Edge or Safari." : "");
   $("holdWrap").hidden = cur.kind !== "video" || exportPrefs.format === "png";
 }
@@ -2727,15 +3708,41 @@ function refreshQualities() {
     c.height = 200;
     const size = el("small", "size", "Estimating…");
     b.append(c, el("b", "", p.name), el("small", "", w + " × " + h + (f === "gif" ? " · " + p.fps + " fps" : "") + " · " + p.hint), size);
+    const card = { p, c, size, w, h, bytes: 0 };
     b.onclick = () => {
       exportPrefs[f] = p.id;
       savePrefs();
       box.querySelectorAll(".quality").forEach((x) => x.classList.toggle("on", x === b));
+      sizeWarning(cards);
     };
     box.append(b);
-    return { p, c, size, w, h };
+    return card;
   });
-  estRun = estimateAll(cards);
+  $("sizeWarn").hidden = true;
+  estRun = estimateAll(cards).then(() => sizeWarning(cards));
+}
+// Big GIFs: GitHub stops showing images at about 10 MB, and they are slow everywhere.
+function sizeWarning(cards) {
+  const warn = $("sizeWarn"),
+    f = exportPrefs.format,
+    card = cards.find((c) => c.p.id === exportPrefs[f]);
+  warn.hidden = !(f === "gif" && card?.bytes > 10e6);
+  if (warn.hidden) return;
+  warn.textContent = "";
+  warn.append(
+    el("span", "", "This GIF will be about " + fmtBytes(card.bytes) + ". GitHub only shows images up to about 10 MB, and big GIFs load slowly. "),
+  );
+  if (MP4_OK) {
+    const b = el("button", "link small", "Make an MP4 instead");
+    b.type = "button";
+    b.onclick = () => {
+      exportPrefs.format = "mp4";
+      savePrefs();
+      renderFormats();
+      refreshQualities();
+    };
+    warn.append(b);
+  }
 }
 // The area the previews zoom into: the selected sticker, else the first one, else the middle.
 function focusRect() {
@@ -2752,6 +3759,91 @@ function focusRect() {
   }
   return [clamp(x - fw / 2, cx, cx + cw - fw), clamp(y - fh / 2, cy, cy + ch - fh), fw, fh];
 }
+// Estimates every GIF size: the real first frame of each, plus what the later frames add.
+// For a recording that comes from the quiet study of the clip (a small GIF of all of it,
+// scaled to each size); for a picture with animated stickers, from encoding a few moments.
+async function estimateGifs(cards, token) {
+  const total = outTotal(),
+    video = cur.kind === "video",
+    g = showOf();
+  const per = cards.map((card) => {
+    const c = el("canvas");
+    c.width = card.w;
+    c.height = card.h;
+    return { card, ctx: c.getContext("2d", { willReadFrequently: true }), times: animated() ? frameTimes(card.p.fps) : [0, total] };
+  });
+  const grab = (x, t) => {
+    drawOut(x.ctx, x.card.w, x.card.h, t);
+    return x.ctx.getImageData(0, 0, x.card.w, x.card.h).data;
+  };
+  if (video) await seekVideo(cur.source, sourceTime(0));
+  for (const x of per) {
+    const one = createDeltaGif(window.GifEnc, x.card.w, x.card.h);
+    one.add(grab(x, 0), 100, x.card.p.colors);
+    x.first = one.finish().length;
+    await pause(0);
+  }
+  if (!animated()) return per.map((x) => x.first);
+  if (video) {
+    const m = await analyzeMotion(cur, (f) => token === estToken && cards.forEach((c) => (c.size.textContent = "Estimating… " + Math.round(f * 100) + "%")));
+    if (token !== estToken) return null;
+    const segs = segments();
+    let bytes = 0;
+    m.gif.forEach((b, i) => {
+      const s = (i + 0.5) * m.dt;
+      if (segs.some(([a, z]) => s >= a && s < z)) bytes += b;
+    });
+    // The changes cost about the same per pixel at any size; faster frame rates add a little.
+    return per.map((x) => x.first + ((bytes * x.card.w * x.card.h) / m.gifArea) * Math.pow(x.card.p.fps / 15, 0.3) + stickerBytes(x));
+  }
+  if (g) {
+    // A slideshow: each new step, and its stickers popping in, then nothing moves until the next.
+    const sizes = [];
+    for (const x of per) {
+      const fps = x.card.p.fps;
+      let extra = 0,
+        a = 0;
+      for (const [i, step] of g.steps.entries()) {
+        if (token !== estToken) return null;
+        const d = stepLen(step),
+          n = Math.min(Math.round(0.6 * fps), Math.floor(d * fps) - 1),
+          enc = createDeltaGif(window.GifEnc, x.card.w, x.card.h);
+        enc.prime(grab(x, i ? a - 1 / fps : 0));
+        for (let k = i ? 0 : 1; k <= n; k++) enc.add(grab(x, a + k / fps), 100, x.card.p.colors);
+        enc.finish();
+        extra += enc.frameBytes();
+        a += d;
+        await pause(0);
+      }
+      sizes.push(x.first + extra);
+    }
+    return sizes;
+  }
+  // A picture: only the stickers move. Encode a few moments of each size.
+  const picks = [0.1, 0.3, 0.5, 0.7, 0.9].map((f) => f * total);
+  return per.map((x) => {
+    const count = x.times.length - 1;
+    if (count < 2) return x.first;
+    let extra = 0,
+      frames = 0;
+    for (const t of picks) {
+      const k0 = Math.min(count - 4, Math.round(t * x.card.p.fps));
+      if (k0 < 0) continue;
+      const enc = createDeltaGif(window.GifEnc, x.card.w, x.card.h);
+      enc.prime(grab(x, x.times[k0]));
+      for (let k = k0 + 1; k <= k0 + 3; k++) enc.add(grab(x, x.times[k]), 100, x.card.p.colors);
+      enc.finish();
+      extra += enc.frameBytes();
+      frames += 3;
+    }
+    return x.first + (frames ? (extra / frames) * (count - 1) : 0);
+  });
+}
+// Stickers pop in and out with a short animation; roughly two full redraws of each one's area.
+function stickerBytes(x) {
+  const [, , cw, ch] = cur.edit.crop;
+  return cur.stickers.reduce((n, s) => n + 2 * x.first * clamp(Math.abs((s.w || 100) * (s.h || s.w || 100)) / (cw * ch), 0.002, 1), 0);
+}
 async function estimateAll(cards) {
   const token = ++estToken;
   await estRun.catch(() => {});
@@ -2764,16 +3856,17 @@ async function estimateAll(cards) {
     [cx, cy, cw] = cur.edit.crop;
   try {
     if (cur.kind === "video") await seekVideo(cur.source, sourceTime(t0));
+    // Quality samples first (quick to see), then the sizes.
     for (const card of cards) {
       if (token !== estToken) return;
       const out = el("canvas");
       out.width = card.w;
       out.height = card.h;
       const octx = out.getContext("2d", { willReadFrequently: true });
-      renderFrame(octx, card.w, card.h, t0);
+      drawOut(octx, card.w, card.h, showOf() ? outNow() : t0);
       let bytes = 0;
       if (f === "gif") {
-        const { quantize, applyPalette, GIFEncoder } = window.GifEnc;
+        const { quantize, applyPalette } = window.GifEnc;
         const img = octx.getImageData(0, 0, card.w, card.h),
           palette = quantize(img.data, card.p.colors),
           idx = applyPalette(img.data, palette);
@@ -2784,25 +3877,36 @@ async function estimateAll(cards) {
           img.data[i * 4 + 2] = c[2];
         }
         octx.putImageData(img, 0, 0);
-        const enc = GIFEncoder();
-        enc.writeFrame(idx, card.w, card.h, { palette });
-        enc.finish();
-        const frames = animated() ? frameTimes(card.p.fps).length - 1 : 1;
-        // Screen recordings have many still moments that compress well.
-        bytes = enc.bytesView().length * frames * (cur.kind === "video" ? 0.75 : 1);
+        bytes = null;
       } else if (f === "mp4") {
-        bytes = (card.p.bitrate * timing().total) / 8;
+        bytes = (card.p.bitrate * outTotal()) / 8;
       } else {
         const blob = await new Promise((r) => out.toBlob(r, "image/png"));
         bytes = blob?.size || 0;
       }
-      // Zoomed sample so the difference in quality is visible.
+      // Zoomed sample so the difference in quality is visible (for a slideshow: its caption).
       const k = card.w / cw,
         cctx = card.c.getContext("2d");
       cctx.imageSmoothingEnabled = false;
-      cctx.drawImage(out, (zoom[0] - cx) * k, (zoom[1] - cy) * k, zoom[2] * k, zoom[3] * k, 0, 0, 320, 200);
-      card.size.textContent = (f === "mp4" ? "Up to " : f === "png" ? "" : "About ") + fmtBytes(bytes);
+      if (showOf()) {
+        const zw = card.w * 0.36,
+          zh = (zw * 200) / 320;
+        cctx.drawImage(out, 0, card.h - zh, zw, zh, 0, 0, 320, 200);
+      } else cctx.drawImage(out, (zoom[0] - cx) * k, (zoom[1] - cy) * k, zoom[2] * k, zoom[3] * k, 0, 0, 320, 200);
+      if (bytes !== null) {
+        card.bytes = bytes;
+        card.size.textContent = (f === "mp4" ? "Up to " : "") + fmtBytes(bytes);
+      }
       await pause(0);
+    }
+    if (f === "gif") {
+      const sizes = await estimateGifs(cards, token);
+      if (!sizes || token !== estToken) return;
+      cards.forEach((card, i) => {
+        card.bytes = sizes[i];
+        card.size.textContent = "About " + fmtBytes(sizes[i]);
+      });
+      if (cur.kind === "video") await seekVideo(cur.source, sourceTime(t0));
     }
   } catch {
     cards.forEach((c) => c.size.textContent === "Estimating…" && (c.size.textContent = ""));
@@ -2842,6 +3946,7 @@ function lockUI(on) {
 async function runExport(f, preset) {
   stopPlay();
   lockUI(true);
+  studyHold = true; // the quiet clip study waits, so the export gets the computer to itself
   const original = playhead;
   if (cur.kind === "video") cur.source.onseeked = null;
   const { w, h } = outSize(preset);
@@ -2852,7 +3957,7 @@ async function runExport(f, preset) {
       c.width = w;
       c.height = h;
       if (cur.kind === "video") await seekVideo(cur.source, sourceTime(playhead));
-      renderFrame(c.getContext("2d"), w, h, playhead);
+      drawOut(c.getContext("2d"), w, h, outNow());
       blob = await new Promise((r) => c.toBlob(r, "image/png"));
     } else if (f === "gif") blob = await exportGif(preset, w, h);
     else blob = await exportMp4(preset, w, h);
@@ -2862,46 +3967,232 @@ async function runExport(f, preset) {
   } catch (err) {
     toast("Export did not finish. " + (err.message || err), 6000);
   } finally {
+    studyHold = false;
     lockUI(false);
     setPosition(original);
   }
 }
 const progress = (what, i, n) => toast(what + " · " + Math.round((100 * i) / n) + "%", 0);
 
-async function exportGif(p, w, h) {
-  const { GIFEncoder, quantize, applyPalette } = window.GifEnc,
+/* ---------- GIF engine ----------
+   Screen recordings change very little from one frame to the next, so after the first frame
+   each GIF frame only stores the rectangle that changed, with the unchanged pixels inside it
+   left see-through. Frames where nothing changed simply make the previous frame last longer.
+   This function is self-contained so the very same code can run in a background worker. */
+function createDeltaGif(lib, w, h) {
+  const { GIFEncoder, quantize, applyPalette } = lib,
     enc = GIFEncoder(),
-    c = el("canvas");
+    seen = new Uint8ClampedArray(w * h * 4), // what the viewer currently sees (source colours)
+    mask = new Uint8Array(w * h),
+    TOL = 24;
+  let pending = null,
+    frames = 0,
+    frameBytes = 0;
+  // The quantizer works with rounded colours (a white page comes out light grey). Set each
+  // palette colour to the true average of the pixels that use it, so flat areas are exact and
+  // patches drawn in later frames don't show as faint boxes.
+  const refine = (pix, idx, palette, use) => {
+    const sum = new Float64Array(palette.length * 4);
+    for (let k = 0; k < idx.length; k++) {
+      if (use && !use(k)) continue;
+      const c = idx[k] * 4,
+        j = k * 4;
+      sum[c] += pix[j];
+      sum[c + 1] += pix[j + 1];
+      sum[c + 2] += pix[j + 2];
+      sum[c + 3]++;
+    }
+    for (let c = 0; c < palette.length; c++) {
+      const m = sum[c * 4 + 3];
+      if (m) palette[c] = [Math.round(sum[c * 4] / m), Math.round(sum[c * 4 + 1] / m), Math.round(sum[c * 4 + 2] / m)];
+    }
+  };
+  const flush = () => {
+    if (!pending) return;
+    const f = pending,
+      before = enc.bytesView().length;
+    pending = null;
+    enc.writeFrame(f.idx, f.w, f.h, {
+      palette: f.palette,
+      delay: f.delay,
+      x: f.x,
+      y: f.y,
+      transparent: f.transparent,
+      transparentIndex: f.ti,
+      dispose: 1,
+      repeat: 0,
+    });
+    if (frames > 1) frameBytes += enc.bytesView().length - before;
+  };
+  return {
+    // Start from a picture the viewer already sees, without writing it (used for size estimates).
+    prime(rgba) {
+      seen.set(rgba);
+      frames = 1;
+    },
+    frameBytes: () => frameBytes, // bytes of the frames after the first one
+    add(rgba, delay, colors) {
+      if (!frames++) {
+        seen.set(rgba);
+        const palette = quantize(rgba, colors),
+          idx = applyPalette(rgba, palette);
+        refine(rgba, idx, palette);
+        pending = { idx, palette, delay, x: 0, y: 0, w, h, transparent: false, ti: 0 };
+        return;
+      }
+      let x0 = w,
+        y0 = h,
+        x1 = -1,
+        y1 = -1,
+        count = 0;
+      for (let y = 0, i = 0; y < h; y++)
+        for (let x = 0; x < w; x++, i++) {
+          const j = i * 4;
+          const d = Math.abs(rgba[j] - seen[j]) + Math.abs(rgba[j + 1] - seen[j + 1]) + Math.abs(rgba[j + 2] - seen[j + 2]);
+          if (d > TOL) {
+            mask[i] = 1;
+            count++;
+            if (x < x0) x0 = x;
+            if (x > x1) x1 = x;
+            if (y < y0) y0 = y;
+            if (y > y1) y1 = y;
+          } else mask[i] = 0;
+        }
+      if (!count) {
+        if (pending) pending.delay += delay;
+        return;
+      }
+      const rw = x1 - x0 + 1,
+        rh = y1 - y0 + 1,
+        rect = new Uint8ClampedArray(rw * rh * 4),
+        changed = new Uint8ClampedArray(count * 4);
+      for (let y = 0, k = 0, c = 0; y < rh; y++)
+        for (let x = 0; x < rw; x++, k++) {
+          const i = (y + y0) * w + x + x0,
+            j = i * 4,
+            q = k * 4;
+          rect[q] = rgba[j];
+          rect[q + 1] = rgba[j + 1];
+          rect[q + 2] = rgba[j + 2];
+          rect[q + 3] = 255;
+          if (mask[i]) {
+            changed[c++] = rgba[j];
+            changed[c++] = rgba[j + 1];
+            changed[c++] = rgba[j + 2];
+            changed[c++] = 255;
+            seen[j] = rgba[j];
+            seen[j + 1] = rgba[j + 1];
+            seen[j + 2] = rgba[j + 2];
+          }
+        }
+      // One colour is kept free for "see-through".
+      const palette = quantize(changed, Math.max(2, colors - 1)),
+        idx = applyPalette(rect, palette),
+        ti = palette.length,
+        inside = (k) => mask[(((k / rw) | 0) + y0) * w + (k % rw) + x0];
+      refine(rect, idx, palette, inside);
+      palette.push([0, 0, 0]);
+      for (let y = 0, k = 0; y < rh; y++)
+        for (let x = 0; x < rw; x++, k++) if (!mask[(y + y0) * w + x + x0]) idx[k] = ti;
+      flush();
+      pending = { idx, palette, delay, x: x0, y: y0, w: rw, h: rh, transparent: true, ti };
+    },
+    finish() {
+      flush();
+      enc.finish();
+      return enc.bytesView();
+    },
+  };
+}
+// Runs the GIF encoder in a background worker so the page stays responsive (falls back to the page).
+function gifEncoder(w, h) {
+  let worker = null;
+  try {
+    const code =
+      "self.GifEnc = (" + ClipnoteGifEnc.toString() + ")();\n" +
+      "const createDeltaGif = " + createDeltaGif.toString() + ";\n" +
+      "let gif = null;\n" +
+      "onmessage = (e) => { const m = e.data; try {\n" +
+      "  if (m.type === 'init') gif = createDeltaGif(self.GifEnc, m.w, m.h);\n" +
+      "  else if (m.type === 'frame') { gif.add(new Uint8ClampedArray(m.rgba), m.delay, m.colors); postMessage({ type: 'ack' }); }\n" +
+      "  else if (m.type === 'finish') { const b = gif.finish(); postMessage({ type: 'done', bytes: b }, [b.buffer]); }\n" +
+      "} catch (err) { postMessage({ type: 'error', message: String(err && err.message || err) }); } };";
+    const url = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
+    worker = new Worker(url);
+    URL.revokeObjectURL(url);
+  } catch {
+    worker = null;
+  }
+  if (!worker) {
+    const gif = createDeltaGif(window.GifEnc, w, h);
+    return { add: async (rgba, delay, colors) => gif.add(rgba, delay, colors), finish: async () => gif.finish(), close() {} };
+  }
+  let inFlight = 0,
+    waiters = [],
+    done = null,
+    failure = null;
+  worker.onmessage = (e) => {
+    const m = e.data;
+    if (m.type === "ack") inFlight--;
+    else if (m.type === "done") done?.resolve(m.bytes);
+    else if (m.type === "error") {
+      failure = new Error(m.message);
+      done?.reject(failure);
+    }
+    waiters.splice(0).forEach((r) => r());
+  };
+  worker.onerror = (e) => {
+    failure = new Error(e.message || "The GIF encoder stopped.");
+    done?.reject(failure);
+    waiters.splice(0).forEach((r) => r());
+  };
+  worker.postMessage({ type: "init", w, h });
+  return {
+    async add(rgba, delay, colors) {
+      if (failure) throw failure;
+      inFlight++;
+      worker.postMessage({ type: "frame", rgba: rgba.buffer, delay, colors }, [rgba.buffer]);
+      // Keep a few frames queued, no more, so memory stays small.
+      while (inFlight > 3 && !failure) await new Promise((r) => waiters.push(r));
+      if (failure) throw failure;
+    },
+    finish() {
+      return new Promise((resolve, reject) => {
+        done = { resolve, reject };
+        if (failure) reject(failure);
+        else worker.postMessage({ type: "finish" });
+      });
+    },
+    close() {
+      worker.terminate();
+    },
+  };
+}
+
+async function exportGif(p, w, h) {
+  const c = el("canvas");
   c.width = w;
   c.height = h;
-  const ctx = c.getContext("2d", { willReadFrequently: true });
-  const times = animated() ? frameTimes(p.fps) : [0, timing().total];
-  let pending = null,
-    prev = null;
-  const flush = () => pending && enc.writeFrame(pending.idx, w, h, { palette: pending.palette, delay: pending.delay, repeat: 0 });
-  for (let i = 0; i < times.length - 1; i++) {
-    const t = times[i];
-    if (cur.kind === "video") await seekVideo(cur.source, sourceTime(t));
-    syncUI(t);
-    renderFrame(ctx, w, h, t);
-    // GIF delays are whole hundredths of a second: round the running total, not each frame.
-    const data = ctx.getImageData(0, 0, w, h).data,
-      delay = (Math.round(times[i + 1] * 100) - Math.round(t * 100)) * 10;
-    const words = new Uint32Array(data.buffer);
-    // Identical frames are merged into one longer frame.
-    if (prev && pending && words.every((v, j) => v === prev[j])) pending.delay += delay;
-    else {
-      flush();
-      const palette = quantize(data, p.colors);
-      pending = { idx: applyPalette(data, palette), palette, delay };
-      prev = words.slice();
+  const ctx = c.getContext("2d", { willReadFrequently: true }),
+    times = animated() ? frameTimes(p.fps) : [0, outTotal()],
+    enc = gifEncoder(w, h),
+    reader = cur.kind === "video" ? frameReader(cur.source) : null;
+  try {
+    for (let i = 0; i < times.length - 1; i++) {
+      const t = times[i];
+      if (reader) await reader.at(sourceTime(t));
+      if (!showOf()) syncUI(t);
+      drawOut(ctx, w, h, t);
+      // GIF delays are whole hundredths of a second: round the running total, not each frame.
+      const delay = (Math.round(times[i + 1] * 100) - Math.round(t * 100)) * 10;
+      await enc.add(ctx.getImageData(0, 0, w, h).data, delay, p.colors);
+      progress("Making your GIF", i + 1, times.length - 1);
     }
-    progress("Making your GIF", i + 1, times.length - 1);
-    if (i % 2 === 0) await pause(0);
+    toast("Making your GIF · finishing…", 0);
+    return new Blob([await enc.finish()], { type: "image/gif" });
+  } finally {
+    enc.close();
   }
-  flush();
-  enc.finish();
-  return new Blob([enc.bytesView()], { type: "image/gif" });
 }
 
 async function pickCodec(w, h, bitrate, fps) {
@@ -2936,15 +4227,16 @@ async function exportMp4(p, w, h) {
   c.width = w;
   c.height = h;
   const ctx = c.getContext("2d"),
-    { total } = timing(),
+    total = outTotal(),
     n = Math.max(1, Math.round(total * p.fps)),
-    us = 1e6 / p.fps;
+    us = 1e6 / p.fps,
+    reader = cur.kind === "video" ? frameReader(cur.source) : null;
   for (let i = 0; i < n; i++) {
     if (failure) throw failure;
     const t = i / p.fps;
-    if (cur.kind === "video") await seekVideo(cur.source, sourceTime(t));
-    syncUI(t);
-    renderFrame(ctx, w, h, t);
+    if (reader) await reader.at(sourceTime(t));
+    if (!showOf()) syncUI(t);
+    drawOut(ctx, w, h, t);
     const frame = new VideoFrame(c, { timestamp: Math.round(i * us), duration: Math.round(us) });
     encoder.encode(frame, { keyFrame: i % (p.fps * 2) === 0 });
     frame.close();

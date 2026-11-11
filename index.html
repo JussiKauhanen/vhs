@@ -35,8 +35,11 @@
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" /></symbol>
       <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></symbol>
       <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3.5h8l4 4V20a.5.5 0 0 1-.5.5h-11A.5.5 0 0 1 6 20z M14 3.5V8h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" /></symbol>
+      <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" fill="currentColor" /></symbol>
       <symbol id="i-home" viewBox="0 0 24 24"><path d="M4 10.5L12 4l8 6.5V19a1 1 0 0 1-1 1h-4.5v-6h-5v6H5a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" /></symbol>
       <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="2.2" /><path d="M15 15l5 5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" /></symbol>
+      <symbol id="i-slides" viewBox="0 0 24 24"><rect x="3.5" y="5" width="13" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2" /><path d="M8 19h11.5a1 1 0 0 0 1-1V9.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></symbol>
+      <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V6M6.5 11.5L12 6l5.5 5.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" /></symbol>
       <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" /></symbol>
     </svg>
 
@@ -80,6 +83,7 @@
               or open an image or video
             </button>
             <input id="file" type="file" accept="image/*,video/*" hidden />
+            <input id="picFile" type="file" accept="image/*" hidden />
             <p id="homeNote" class="note"></p>
           </div>
           <ol class="steps">
@@ -141,6 +145,14 @@
         <div class="stage" id="stage">
           <div class="canvasbox" id="canvasBox">
             <canvas id="view"></canvas>
+            <div id="capBand" class="capband" hidden>
+              <span id="capNum" class="capnum">1</span>
+              <span class="capfields">
+                <input id="stepTitle" maxlength="90" placeholder="Name this step, like “Open Settings”" aria-label="Step title" autocomplete="off" />
+                <input id="stepText" maxlength="160" placeholder="Add a short explanation (optional)" aria-label="Step explanation" autocomplete="off" />
+              </span>
+              <span id="capCount" class="capcount mono">1 / 1</span>
+            </div>
             <div id="cropFrame" hidden><b></b><b></b><b></b><b></b></div>
             <div id="selbar" class="selbar card" hidden>
               <input id="selText" maxlength="80" aria-label="Sticker text" />
@@ -151,6 +163,7 @@
           <div class="stagetools">
             <button id="cropBtn" class="ghost small"><svg><use href="#i-crop" /></svg> <span>Crop</span></button>
             <button id="cropReset" class="ghost small" hidden>Reset crop</button>
+            <button id="slidesBtn" class="ghost small" hidden title="Pick the key screens of this recording and turn them into a step-by-step slideshow"><svg><use href="#i-slides" /></svg> <span>Make a slideshow</span></button>
           </div>
           <div id="emptyHint" class="emptyhint" hidden>Drag a sticker here ✨</div>
         </div>
@@ -162,7 +175,9 @@
             <span id="trimTools" class="trimtools">
               <button id="cutStart" class="ghost small" title="Remove everything before the playhead ( [ )"><svg><use href="#i-scissors" /></svg> Start here</button
               ><button id="cutEnd" class="ghost small" title="Remove everything after the playhead ( ] )"><svg><use href="#i-scissors" /></svg> End here</button
-              ><button id="cutReset" class="link small" hidden>Undo trim</button>
+              ><button id="pauseBtn" class="ghost small" title="Find the moments where nothing happens and cut them out"><svg><use href="#i-spark" /></svg> Remove pauses</button
+              ><button id="cutReset" class="link small" hidden>Restore all</button
+              ><span id="cutHint" class="cuthint">Tip: drag across the clip to cut out a part</span>
             </span>
             <span class="grow"></span>
             <label id="speedWrap" class="small">Speed
@@ -174,11 +189,38 @@
               <div class="trow ruler"><div class="tlab"></div><div class="lane" id="ruler"></div></div>
               <div id="rows"></div>
               <div class="playhead" id="playhead"><i></i></div>
+              <div id="rangeBar" class="rangebar" hidden>
+                <button id="rangeRemove" class="danger small"><svg><use href="#i-scissors" /></svg> Remove this part <span id="rangeLen" class="mono"></span></button
+                ><button id="rangeCancel" class="icon small" aria-label="Keep it" title="Keep it (Esc)"><svg><use href="#i-close" /></svg></button>
+              </div>
             </div>
           </div>
         </section>
       </section>
+      <aside id="stepsPanel" class="stepspanel card" hidden>
+        <div class="stepshead"><b>Steps</b> <span id="stepsCount" class="faint"></span></div>
+        <ol id="stepList" class="steplist"></ol>
+        <div class="stepsfoot">
+          <button id="addMoments" class="ghost small"><svg><use href="#i-plus" /></svg> Add screens</button>
+          <button id="addPicture" class="link small">or a picture from a file</button>
+        </div>
+      </aside>
     </main>
+
+    <dialog id="momentDialog" class="card momentdialog">
+      <form method="dialog">
+        <div class="dlghead">
+          <h2 id="momentTitle">Pick the screens for your slideshow</h2>
+          <button value="cancel" class="icon" aria-label="Close"><svg><use href="#i-close" /></svg></button>
+        </div>
+        <p id="momentNote" class="note">Clipnote picked the moments where something changed on screen. Click a screen to add it or leave it out.</p>
+        <div id="momentGrid" class="momentgrid"></div>
+        <div class="dlgfoot">
+          <p id="momentCount" class="note"></p>
+          <button value="make" class="primary" id="momentGo"><svg><use href="#i-slides" /></svg> <span>Make slideshow</span></button>
+        </div>
+      </form>
+    </dialog>
 
     <p id="toast" class="toast" role="status" hidden></p>
 
@@ -191,6 +233,7 @@
         <div class="segmented" id="formats" role="tablist"></div>
         <p id="formatNote" class="note"></p>
         <div class="qualities" id="qualities"></div>
+        <p id="sizeWarn" class="sizewarn" hidden></p>
         <label id="holdWrap" class="small holdwrap">Pause on the last frame
           <select id="hold"><option value="0">No pause</option><option value="1">1 second</option><option value="2">2 seconds</option><option value="3">3 seconds</option></select>
         </label>

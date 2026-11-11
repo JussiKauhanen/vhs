@@ -2,24 +2,43 @@
 
 Record a short clip of your screen, drop friendly animated stickers on it, and share it as a GIF, MP4 or PNG — made for quick how-to snippets in GitHub READMEs. Everything runs in the web page; nothing is uploaded.
 
-### [▶ Try Clipnote live](https://jussikauhanen.github.io/vhs/)
+### [▶ Try Clipnote live](https://jussikauhanen.github.io/clipnote/)
 
 Works best in Chrome or Edge on a computer.
 
 <!-- Demo slots: replace any file in docs/ with a new one of the same name to update the pictures below. -->
 ![Clipnote in action: start a recording, drag stickers onto the clip, trim it and export a GIF](docs/demo.gif)
 
+| What you get | Your clips, saved in the browser |
+| :---: | :---: |
+| ![A GIF made with Clipnote: a note, a click ring on the “New note” button, a NEW tag and a highlighter](docs/example.gif) | ![The home page with saved clips](docs/home.png) |
+| *This GIF was made with Clipnote.* | *Pick up any clip where you left off.* |
+
+![The editor in dark mode, with the sticker panel and a timeline line for each sticker](docs/editor-dark.png)
+
 ## Use it
 
-Open the [live version](https://jussikauhanen.github.io/vhs/), or open `index.html` from this folder in Chrome or Edge. (`Start Clipnote.command` is an optional Mac shortcut that serves the folder locally and opens it.)
+Open the [live version](https://jussikauhanen.github.io/clipnote/), or open `index.html` from this folder in Chrome or Edge. (`Start Clipnote.command` is an optional Mac shortcut that serves the folder locally and opens it.)
 
 1. Click **Start recording** and pick a window to share. That window comes to the front so you can work in it right away. Sharing a single window, not the entire screen, keeps the floating controls out of your video.
 2. A small floating window stays on top of everything. It shows a live mini view of what is being recorded (blue frame when ready, red while recording) with **Record**, **Pause**, **Stop**, and the **camera** button for screenshots. Screenshots are collected and open as their own tabs when you finish. Press **Done** (or Stop) to finish.
 3. In the editor, pick stickers from the panel on the left (search it, or browse the sections) and drag them onto your clip, or click one to add it in the middle:
    notes and tags, speech bubbles (speech, oval, thought, burst, box), arrows, highlight shapes (circle, box, highlighter, spotlight), mouse clicks (click, double-click, right-click) and keyboard keys (type something like `⌘ + Shift + P`).
    Each sticker pops in with a short animation and gets its own line in the timeline. Drag the line to choose when it shows, or drag its ends to make it shorter or longer. Click a sticker to move it, resize it from the round handle, change its text or colour, or delete it.
-4. Trim the clip: drag the yellow handles, or move the playhead and press **Start here** / **End here**. Cut parts stay visible, hatched, so you can always drag them back. **Crop** trims the edges of the picture.
-5. Click **Export** and choose **GIF**, **MP4** or **PNG**. Each quality option shows a zoomed-in sample of the actual result and an estimated file size. Drag the file into a GitHub README, issue or pull request.
+4. Trim the clip: drag the yellow handles, or move the playhead and press **Start here** / **End here**. To cut out a part in the middle, drag across the clip in the timeline and press **Remove this part**. **Remove pauses** finds the moments where nothing happens and cuts them out in one go. Cut parts stay visible, hatched, with a **Bring back** button, and Undo works too. **Crop** trims the edges of the picture.
+5. Click **Export** and choose **GIF**, **MP4** or **PNG**, then **Small**, **Medium** or **Large**. Each option shows a zoomed-in sample of the actual result and an estimated file size. Drag the file into a GitHub README, issue or pull request.
+
+### Step-by-step slideshows
+
+For how-to guides (say, "how to add a user in the Azure portal" for a Confluence page), a long screen recording makes a heavy GIF. A slideshow is lighter and easier to follow:
+
+1. Open a recording and click **Make a slideshow**. Clipnote looks through it and picks the moments where something changed on screen (your screenshots from the floating controls are picked too). Click screens to add or leave them out, then **Make slideshow**.
+2. Each screen becomes a numbered step. Type a title and a short explanation under the picture, and drop stickers on it like on any clip. Steps are listed on the right: reorder them, delete them, or add more screens or a picture from a file.
+3. **Export** gives a GIF or MP4 that shows one step after another, each with its number and caption, or a PNG of the current step. Each step lasts 3 seconds; drag the end of its timeline bar to change that.
+
+Slideshow GIFs stay small because nothing moves between steps.
+
+![A slideshow in the editor: numbered steps on the right, a caption under the picture, and a click ring sticker on the “New note” button](docs/slideshow.png)
 
 **Your clips:** every recording, screenshot and opened file is saved automatically in this browser, stickers and edits included. A "Saved" mark at the top shows it is safe. Click the Clipnote logo or **Home** to see all your clips; click one to keep editing, click its name to rename it, or delete it (with Undo). Double-click a tab at the top to rename the open clip. Nothing is uploaded; clearing the browser's site data removes the clips, so export anything you want to keep for good.
 
@@ -28,6 +47,7 @@ Shortcuts in the editor: Space play/pause · ← → step (Shift: 1 s) · `[` `]
 ## Good to know
 
 - Recordings are silent and stop after 60 seconds.
+- GIFs only store what changes from frame to frame, so a 30-second screen recording usually comes out well under 1 MB. If a GIF would be over 10 MB (more than GitHub shows), the export window suggests MP4 instead.
 - The floating controls need Chrome or Edge. In other browsers the controls stay in the Clipnote tab.
 - MP4 export uses the browser's built-in video encoder (Chrome, Edge, Safari). GIF and PNG work everywhere.
 - Clips are kept in this browser only (Chrome and Edge keep them even when you open `index.html` straight from the folder). Another browser or computer won't see them.
