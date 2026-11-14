@@ -881,31 +881,79 @@ async function videoProject(url, length, name) {
   return p;
 }
 // Reading frames in order: instead of jumping (slow on screen recordings, which store few full
-// frames), play the video forward briefly and stop on the frame we need. Far or backward moves still jump.
+// frames), play the video forward and keep a copy of the newest frame that is not past the time we
+// need. Screen recordings only store a frame when something changes, so the next frame can be far
+// ahead: it is put aside until its time comes rather than shown early (showing it early, then
+// jumping back, made menus open twice and moving things flicker). Draw `image`, not the video.
+// Backward or far moves still jump.
 function frameReader(v, rate = 2) {
-  const canStep = "requestVideoFrameCallback" in HTMLVideoElement.prototype;
+  const canStep = "requestVideoFrameCallback" in HTMLVideoElement.prototype,
+    w = v.videoWidth,
+    h = v.videoHeight,
+    canvas = () => {
+      const c = el("canvas");
+      c.width = w;
+      c.height = h;
+      return c;
+    },
+    image = canvas(), // the frame to show now
+    ahead = canvas(), // the next frame, already decoded but not due yet
+    copy = (c, from = v) => c.getContext("2d").drawImage(from, 0, 0, w, h);
+  let shownAt = -Infinity, // time of the frame in `image`
+    aheadAt = null, // time of the frame in `ahead`
+    reached = -Infinity; // the video has been played up to here: no other frames before it
+  const jump = async (t) => {
+    await seekVideo(v, t);
+    copy(image);
+    shownAt = reached = t;
+    aheadAt = null;
+  };
   return {
+    image,
     async at(target) {
-      const now = v.currentTime;
-      if (!canStep || target < now - 0.001 || target - now > 1.5) return seekVideo(v, target);
-      if (target - now < 0.017) return;
+      if (!canStep || target < shownAt - 0.0005 || target > Math.max(reached, shownAt) + 1.5) return jump(target);
+      if (aheadAt !== null) {
+        if (target < aheadAt - 0.0005) return;
+        copy(image, ahead);
+        shownAt = aheadAt;
+        aheadAt = null;
+      }
+      if (target <= reached + 0.0005) return;
       const ok = await new Promise((resolve) => {
-        const timer = setTimeout(() => resolve(false), 400);
+        let timer = 0,
+          over = false;
+        const done = (result) => {
+          if (over) return;
+          over = true;
+          clearTimeout(timer);
+          v.pause();
+          reached = Math.max(reached, v.currentTime);
+          resolve(result);
+        };
+        // No new frame for a while: the picture did not change (or the video ended).
+        const quiet = () => {
+          clearTimeout(timer);
+          timer = setTimeout(() => done(v.currentTime >= target - 0.0005), 400);
+        };
         const step = (_, meta) => {
-          if (meta.mediaTime >= target - 0.017) {
-            v.pause();
-            clearTimeout(timer);
-            resolve(true);
-          } else v.requestVideoFrameCallback(step);
+          if (over) return;
+          const t = meta.mediaTime;
+          if (t > target + 0.0005) {
+            copy(ahead);
+            aheadAt = t;
+            return done(true);
+          }
+          copy(image);
+          shownAt = Math.max(shownAt, t);
+          quiet();
+          v.requestVideoFrameCallback(step);
         };
         v.requestVideoFrameCallback(step);
+        quiet();
         v.playbackRate = rate;
-        v.play().catch(() => resolve(false));
+        v.play().catch(() => done(false));
       });
-      if (!ok) {
-        v.pause();
-        await seekVideo(v, target);
-      }
+      if (!ok) await jump(target);
     },
   };
 }
@@ -1738,8 +1786,9 @@ let cropping = false,
   cropRegion = null;
 let selected = null;
 
+let frameOverride = null; // while exporting: the reader's copy of the right frame
 function frameSource(t) {
-  return cur.source;
+  return frameOverride || cur.source;
 }
 function viewRect() {
   return cropping ? [0, 0, cur.width, cur.height] : cur.edit.crop;
@@ -2866,7 +2915,7 @@ async function studyClip(p) {
       if (p.closed) throw new Error("closed");
       while (studyHold) await pause(250);
       await reader.at(Math.min(i * dt, p.length - 0.02));
-      ctx.drawImage(v, 0, 0, W, H);
+      ctx.drawImage(reader.image, 0, 0, W, H);
       const px = ctx.getImageData(0, 0, W, H).data;
       if (prev) {
         let changed = 0;
@@ -2876,7 +2925,7 @@ async function studyClip(p) {
         pixels[i] = changed;
       }
       prev = px;
-      gctx.drawImage(v, 0, 0, GW, GH);
+      gctx.drawImage(reader.image, 0, 0, GW, GH);
       enc.add(gctx.getImageData(0, 0, GW, GH).data, 100, 256);
       // A frame is written when the next one arrives, so the bytes belong to the previous sample.
       if (i) gif[i - 1] = enc.frameBytes() - written;
@@ -4177,6 +4226,7 @@ async function exportGif(p, w, h) {
     times = animated() ? frameTimes(p.fps) : [0, outTotal()],
     enc = gifEncoder(w, h),
     reader = cur.kind === "video" ? frameReader(cur.source) : null;
+  frameOverride = reader?.image || null;
   try {
     for (let i = 0; i < times.length - 1; i++) {
       const t = times[i];
@@ -4191,6 +4241,7 @@ async function exportGif(p, w, h) {
     toast("Making your GIF · finishing…", 0);
     return new Blob([await enc.finish()], { type: "image/gif" });
   } finally {
+    frameOverride = null;
     enc.close();
   }
 }
@@ -4231,18 +4282,23 @@ async function exportMp4(p, w, h) {
     n = Math.max(1, Math.round(total * p.fps)),
     us = 1e6 / p.fps,
     reader = cur.kind === "video" ? frameReader(cur.source) : null;
-  for (let i = 0; i < n; i++) {
-    if (failure) throw failure;
-    const t = i / p.fps;
-    if (reader) await reader.at(sourceTime(t));
-    if (!showOf()) syncUI(t);
-    drawOut(ctx, w, h, t);
-    const frame = new VideoFrame(c, { timestamp: Math.round(i * us), duration: Math.round(us) });
-    encoder.encode(frame, { keyFrame: i % (p.fps * 2) === 0 });
-    frame.close();
-    while (encoder.encodeQueueSize > 8) await pause(2);
-    progress("Making your MP4", i + 1, n);
-    if (i % 3 === 0) await pause(0);
+  frameOverride = reader?.image || null;
+  try {
+    for (let i = 0; i < n; i++) {
+      if (failure) throw failure;
+      const t = i / p.fps;
+      if (reader) await reader.at(sourceTime(t));
+      if (!showOf()) syncUI(t);
+      drawOut(ctx, w, h, t);
+      const frame = new VideoFrame(c, { timestamp: Math.round(i * us), duration: Math.round(us) });
+      encoder.encode(frame, { keyFrame: i % (p.fps * 2) === 0 });
+      frame.close();
+      while (encoder.encodeQueueSize > 8) await pause(2);
+      progress("Making your MP4", i + 1, n);
+      if (i % 3 === 0) await pause(0);
+    }
+  } finally {
+    frameOverride = null;
   }
   await encoder.flush();
   encoder.close();
