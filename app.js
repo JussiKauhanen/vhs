@@ -223,7 +223,16 @@ function startRecording() {
   if (!stream || recorder) return;
   const chunks = [];
   try {
-    const r = new MediaRecorder(stream);
+    // Without a bitrate the browser picks a low one (about 2.5 Mbit/s), which smears anything that
+    // moves in a large window, like a game or a video. Give it room to match the window's size.
+    const { width = 1920, height = 1080 } = stream.getVideoTracks()[0]?.getSettings() || {},
+      bits = Math.round(Math.min(40e6, Math.max(8e6, width * height * 30 * 0.1)));
+    let r;
+    try {
+      r = new MediaRecorder(stream, { videoBitsPerSecond: bits });
+    } catch {
+      r = new MediaRecorder(stream);
+    }
     r.ondataavailable = (e) => e.data.size && chunks.push(e.data);
     r.onstop = () => {
       const length = recordedTime();
